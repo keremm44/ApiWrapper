@@ -152,6 +152,19 @@ python scripts/compare_curl.py request.txt
 > Cloudflare yeniden doğrulama ister. `cf_clearance` asla `access_token` sanılmaz.
 
 
+### Windows / PowerShell
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\windows\run.ps1                       # servisi baslat (pencere 1)
+.\scripts\windows\chat.ps1 "Merhaba"            # mesaj gonder  (pencere 2)
+.\scripts\windows\chat.ps1 -Interactive         # surekli sohbet
+.\scripts\windows\chat.ps1 -Diagnose            # saglik + kimlik teshisi
+```
+
+Ayrıntı: [`scripts/windows/README.md`](scripts/windows/README.md)
+
+
 ---
 
 ## Kullanım
