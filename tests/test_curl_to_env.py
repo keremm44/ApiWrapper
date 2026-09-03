@@ -165,3 +165,43 @@ def test_windows_cmd_curl_format_is_parsed():
     env, _, _ = build_settings(parse_curl(curl))
     assert env["TARGET_DOMAIN"] == "x.ai"
     assert "a-auth-token=xyz123456789" in env["UPSTREAM_COOKIE"]
+
+
+# ------------------------- yanlış isteğin cURL'ü kopyalandığında
+def test_telemetry_host_is_flagged_as_critical():
+    """Datadog/analitik isteğinin cURL'ü kopyalanırsa TARGET_DOMAIN bozulur.
+
+    Gerçek bir raporda base_url 'browser-intake-us3-datadoghq.com' olmuştu;
+    istekler LLM yerine log toplayıcıya gidiyordu.
+    """
+    curl = (
+        "curl 'https://browser-intake-us3-datadoghq.com/api/v2/rum' "
+        "-H 'cookie: a-auth-token=xyz1234567890abc' --data-raw '{}'"
+    )
+    _, warnings, _ = build_settings(parse_curl(curl))
+    assert any(w.startswith("KRİTİK") and "telemetri" in w for w in warnings)
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["browser-intake-us3-datadoghq.com", "sentry.io", "www.google-analytics.com"],
+)
+def test_known_telemetry_hosts_are_rejected(host: str):
+    curl = f"curl 'https://{host}/collect' -H 'cookie: a=b' --data-raw '{{}}'"
+    _, warnings, _ = build_settings(parse_curl(curl))
+    assert any(w.startswith("KRİTİK") for w in warnings)
+
+
+def test_unexpected_path_is_warned_but_not_critical():
+    """Doğru alan adı ama yanlış uç: uyar, ama yazmayı engelleme."""
+    curl = "curl 'https://example-llm.ai/api/session' -H 'cookie: a-auth=b' --data-raw '{}'"
+    _, warnings, _ = build_settings(parse_curl(curl))
+    assert any("post-to-evaluation" in w for w in warnings)
+    assert not any(w.startswith("KRİTİK") for w in warnings)
+
+
+def test_correct_endpoint_produces_no_path_or_host_warning(sample):
+    curl = _curl(sample["cookie"], sample["body"])
+    _, warnings, _ = build_settings(parse_curl(curl))
+    assert not any("post-to-evaluation" in w for w in warnings)
+    assert not any(w.startswith("KRİTİK") for w in warnings)

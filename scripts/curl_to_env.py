@@ -56,6 +56,28 @@ ENV_ORDER: tuple[str, ...] = (
 #: Oturum çerezi olma ihtimali olan adlar (uyarı üretmek için).
 _SESSION_HINT = "auth"
 
+#: Telemetri/analitik uç noktaları: yanlış isteğin cURL'ü kopyalanmış demektir.
+TELEMETRY_HOSTS: tuple[str, ...] = (
+    "datadoghq",
+    "sentry.io",
+    "google-analytics",
+    "googletagmanager",
+    "posthog",
+    "segment.io",
+    "amplitude",
+    "mixpanel",
+    "doubleclick",
+    "facebook",
+    "clarity.ms",
+    "bugsnag",
+    "newrelic",
+    "intercom",
+    "hotjar",
+)
+
+#: Hedef akış ucunu tanıyan iz: cURL doğru istekten alınmışsa yolda bulunur.
+_EXPECTED_PATH_HINT = "post-to-evaluation"
+
 
 def _mask(value: str, keep: int = 6) -> str:
     """Uzun gizli değerleri günlüğe basmadan önce kısaltır."""
@@ -86,11 +108,27 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
 
     # --- alan adı
     url = parsed["url"]
-    host = urlsplit(url).netloc if url else ""
+    split = urlsplit(url) if url else None
+    host = split.netloc if split else ""
     if host:
         env["TARGET_DOMAIN"] = host
     else:
         warnings.append("URL bulunamadı; TARGET_DOMAIN elle yazılmalı.")
+
+    # Yanlış isteğin cURL'ü kopyalandığında sessizce telemetri sunucusuna
+    # yönlenmemek için erken uyar.
+    lowered_host = host.lower()
+    if any(marker in lowered_host for marker in TELEMETRY_HOSTS):
+        warnings.append(
+            f"KRİTİK: '{host}' bir telemetri/analitik adresi; sohbet ucu değil. "
+            "Network sekmesinde 'post-to-evaluation' isteğine sağ tıklayıp "
+            "cURL'ü yeniden kopyalayın."
+        )
+    elif split and _EXPECTED_PATH_HINT not in split.path.lower():
+        warnings.append(
+            f"URL yolu beklenen '{_EXPECTED_PATH_HINT}' ucunu içermiyor: "
+            f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir."
+        )
 
     # --- başlıklar
     cookie = headers.get("cookie", "").strip()
@@ -213,6 +251,11 @@ def main() -> int:
     parser.add_argument(
         "--show-secrets", action="store_true", help="Değerleri maskelemeden yazdır"
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Kritik uyarılara rağmen yazmayı sürdür",
+    )
     args = parser.parse_args()
 
     raw = sys.stdin.read() if args.curl_file == "-" else Path(args.curl_file).read_text(
@@ -248,6 +291,15 @@ def main() -> int:
     if not args.write:
         print("\nYazmak için --write ekleyin.")
         return 0
+
+    critical = [w for w in warnings if w.startswith("KRİTİK")]
+    if critical and not args.force:
+        print(
+            "\nYazma iptal edildi: yanlış isteğin cURL'ü kopyalanmış görünüyor.\n"
+            "Doğru cURL'ü alıp tekrar deneyin ya da yine de yazmak için --force ekleyin.",
+            file=sys.stderr,
+        )
+        return 3
 
     env_path = Path(args.env_file)
     env_path.write_text(merge_env(env_path, env), encoding="utf-8")

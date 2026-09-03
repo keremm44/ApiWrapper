@@ -120,6 +120,15 @@ finally {
     Remove-Item $tempFile -ErrorAction SilentlyContinue
 }
 
+if ($code -eq 3) {
+    Write-Host ''
+    Write-Host 'YANLIS ISTEK: kopyalanan cURL bir telemetri/analitik cagrisina ait.' -ForegroundColor Red
+    Write-Host 'Network sekmesinde arama kutusuna su metni yazip filtreleyin:' -ForegroundColor Yellow
+    Write-Host '    post-to-evaluation' -ForegroundColor White
+    Write-Host 'Cikan istege sag tik > Copy > Copy as cURL (bash) yapip tekrar deneyin.' -ForegroundColor Yellow
+    exit $code
+}
+
 if ($code -ne 0) {
     Write-Host ''
     Write-Host 'Ayarlar cikarilamadi. cURL i yeniden kopyalayip deneyin.' -ForegroundColor Red
