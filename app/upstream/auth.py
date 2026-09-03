@@ -32,6 +32,8 @@ logger = get_logger(__name__)
 
 #: Çerez adı içinde aranacak varsayılan ipuçları (küçük harfe indirgenmiş, kısmi eşleşme).
 DEFAULT_COOKIE_HINTS: tuple[str, ...] = (
+    "arena-auth",
+    "arena_auth",
     "access_token",
     "access-token",
     "accesstoken",
@@ -72,6 +74,24 @@ _MIN_TOKEN_LENGTH = 16
 
 #: Özyinelemeli JSON taramasında izin verilen azami derinlik.
 _MAX_SCAN_DEPTH = 6
+
+#: Token olmadığı kesin olan çerezler (Cloudflare/analitik). Sezgisel aramada atlanır.
+NEVER_TOKEN_COOKIES = frozenset(
+    {
+        "cf_clearance",
+        "__cf_bm",
+        "cf_chl_rc_m",
+        "_cfuvid",
+        "_ga",
+        "_gid",
+        "_gat",
+        "_fbp",
+        "amplitude_id",
+        "intercom-session",
+        "csrftoken",
+        "xsrf-token",
+    }
+)
 
 
 def parse_cookie_header(raw: str) -> dict[str, str]:
@@ -313,7 +333,7 @@ def extract_access_token(
     fallback: str | None = None
     for hint in DEFAULT_COOKIE_HINTS:
         for name_lower, (_, value) in lowered.items():
-            if hint not in name_lower:
+            if hint not in name_lower or name_lower in NEVER_TOKEN_COOKIES:
                 continue
             token = _token_from_value(value)
             if not token:
@@ -325,7 +345,9 @@ def extract_access_token(
         return fallback
 
     # 4) Son çare: herhangi bir çerezin içinde JWT taşıyan değer var mı?
-    for _, value in cookies.items():
+    for name, value in cookies.items():
+        if name.lower() in NEVER_TOKEN_COOKIES:
+            continue
         for candidate in _candidate_strings(value):
             if looks_like_jwt(candidate.strip()):
                 return candidate.strip()

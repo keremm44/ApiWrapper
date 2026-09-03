@@ -201,7 +201,7 @@ class CompletionService:
         )
         try:
             async with self.upstream.stream_completion(
-                built.chat_id, built.payload.to_wire()
+                built.chat_id, built.payload.to_wire(self.settings.upstream_recaptcha_field)
             ) as chunks:
                 idle = self.settings.stream_idle_timeout
                 iterator = parse_stream(chunks).__aiter__()

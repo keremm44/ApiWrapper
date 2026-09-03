@@ -116,6 +116,44 @@ gönderilmeden önce log uyarısı düşer (`access_token_expired`, kaç saniye 
 
 ---
 
+## Kendi cURL'ünüze Göre Ayarlama (önemli)
+
+Hedef servisler ayrıntılarda farklılaşır. Tarayıcıdan aldığınız isteği bir dosyaya
+kaydedip **karşılaştırma aracını** çalıştırın; hangi başlık/gövde alanının uyuşmadığını
+size satır satır söyler (Windows `^`, bash `\` ve PowerShell `` ` `` kaçışlarını anlar):
+
+```bash
+# DevTools > Network > sağ tık > Copy as cURL  -> request.txt
+python scripts/compare_curl.py request.txt
+```
+
+```text
+=== Gövde alanları (--data-raw) ===
+  EŞLEŞTİ id
+  EKSİK   recaptchaV2Token  <-- gövdemizde yok!
+  FAZLA   recaptchaV3Token  <-- tarayıcı göndermiyor
+
+  !! UPSTREAM_RECAPTCHA_FIELD=recaptchaV3Token ancak tarayıcı 'recaptchaV2Token' gönderiyor.
+     .env içine yazın: UPSTREAM_RECAPTCHA_FIELD=recaptchaV2Token
+```
+
+### Sık karşılaşılan üç fark
+
+| Belirti | Ayar |
+|---|---|
+| Gövdede `recaptchaV2Token` var, biz `recaptchaV3Token` yolluyoruz | `UPSTREAM_RECAPTCHA_FIELD=recaptchaV2Token` |
+| `accept-language` farklı (örn. `tr-TR,...`) | `UPSTREAM_ACCEPT_LANGUAGE=tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7` |
+| cURL'de `authorization` başlığı **yok** | `UPSTREAM_AUTH_FROM_COOKIE=false` (varsayılan) |
+
+> **Cloudflare:** İsteğinizde `cf_clearance` çerezi varsa onu da `UPSTREAM_COOKIE`
+> içine **olduğu gibi** ekleyin. `cf_clearance` yalnızca onu üreten IP + User-Agent
+> ikilisiyle geçerlidir; bu yüzden `UPSTREAM_USER_AGENT` tarayıcınızla birebir aynı
+> olmalı ve sunucu tarayıcıyla aynı çıkıştan (IP) istek atmalıdır — aksi halde
+> Cloudflare yeniden doğrulama ister. `cf_clearance` asla `access_token` sanılmaz.
+
+
+---
+
 ## Kullanım
 
 **cURL — streaming**

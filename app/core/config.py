@@ -56,6 +56,11 @@ class Settings(BaseSettings):
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
+    #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
+    #: "recaptchaV2Token" olabilir; tarayıcı isteğinden birebir kopyalayın.
+    upstream_recaptcha_field: str = "recaptchaV3Token"
+    #: Accept-Language başlığı (tarayıcınızın gönderdiğiyle aynı olmalı).
+    upstream_accept_language: str = "en-US,en;q=0.9"
     upstream_user_agent: str = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
@@ -65,7 +70,9 @@ class Settings(BaseSettings):
     #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).
     upstream_access_token: str = ""
     #: Cookie içinden `access_token` ayıklanıp `Authorization: Bearer` olarak eklensin mi?
-    upstream_auth_from_cookie: bool = True
+    #: Varsayılan False: tarayıcı cURL'inde bu başlık yoksa eklemek parmak izini bozar.
+    #: Hedef 401 döndürüyorsa true yapın.
+    upstream_auth_from_cookie: bool = False
     #: Token'ın aranacağı çerez adları (virgülle ayrılmış). Boşsa sezgisel arama yapılır.
     upstream_token_cookie_names: Annotated[list[str], NoDecode] = Field(default_factory=list)
     #: Authorization başlığının şeması. Boş bırakılırsa token ham olarak gönderilir.

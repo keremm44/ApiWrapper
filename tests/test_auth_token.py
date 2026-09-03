@@ -190,14 +190,15 @@ def test_bearer_prefix_stripped_from_explicit_token():
 
 # ------------------------------------------------------------------ headers
 def test_authorization_header_built_from_cookie():
-    settings = make_settings(upstream_cookie=f"access_token={TOKEN}; theme=dark")
+    settings = make_settings(upstream_cookie=f"access_token={TOKEN}; theme=dark",
+                             upstream_auth_from_cookie=True)
     headers = build_stream_headers(settings, "chat-1")
     assert headers["authorization"] == f"Bearer {TOKEN}"
     assert headers["cookie"] == f"access_token={TOKEN}; theme=dark"
 
 
 def test_authorization_absent_when_no_token():
-    settings = make_settings(upstream_cookie="theme=dark")
+    settings = make_settings(upstream_cookie="theme=dark", upstream_auth_from_cookie=True)
     assert "authorization" not in build_stream_headers(settings, "chat-1")
 
 
@@ -237,6 +238,7 @@ def test_configured_cookie_name_setting_is_honoured():
     settings = make_settings(
         upstream_cookie=f"tracking_jwt={decoy}; my_app_session={TOKEN}",
         upstream_token_cookie_names=["my_app_session"],
+        upstream_auth_from_cookie=True,
     )
     assert build_authorization(settings) == f"Bearer {TOKEN}"
 
@@ -257,4 +259,40 @@ def test_expired_token_still_sent_with_warning(caplog):
 )
 def test_common_cookie_shapes(cookie):
     header = cookie.format(t=TOKEN)
+    assert extract_access_token(header) == TOKEN
+
+
+# --------------------------------------- gerçek hedef cURL'ünden gelen senaryolar
+ARENA_COOKIE = (
+    "arena-auth-prod-v1.0=base64-{blob}; cf_clearance=abcdefghijklmnop1234567890"
+)
+
+
+def _arena_cookie(token: str) -> str:
+    blob = (
+        base64.urlsafe_b64encode(json.dumps({"access_token": token}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    return ARENA_COOKIE.format(blob=blob)
+
+
+def test_arena_auth_cookie_is_recognised():
+    assert extract_access_token(_arena_cookie(TOKEN)) == TOKEN
+
+
+def test_cf_clearance_is_never_mistaken_for_token():
+    """Cloudflare çerezi uzun ve opak; token sanılmamalı."""
+    header = "cf_clearance=" + "Z" * 80 + "; theme=dark"
+    assert extract_access_token(header) is None
+
+
+def test_cf_clearance_ignored_even_with_token_in_name():
+    header = "cf_clearance=" + "Q" * 60 + "; __cf_bm=" + "R" * 60
+    assert extract_access_token(header) is None
+
+
+def test_arena_cookie_preferred_over_cloudflare():
+    header = _arena_cookie(TOKEN)
+    assert "cf_clearance" in header
     assert extract_access_token(header) == TOKEN

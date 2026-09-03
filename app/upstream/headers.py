@@ -41,9 +41,10 @@ def platform_from_ua(user_agent: str) -> str:
 
 def sec_ch_ua(user_agent: str) -> str:
     version = chrome_major_version(user_agent)
+    # Sıra Chrome'un gönderdiğiyle birebir aynı olmalı (parmak izi).
     return (
-        f'"Chromium";v="{version}", "Google Chrome";v="{version}", '
-        '"Not?A_Brand";v="24"'
+        f'"Chromium";v="{version}", "Not?A_Brand";v="24", '
+        f'"Google Chrome";v="{version}"'
     )
 
 
@@ -97,7 +98,7 @@ def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
     ua = settings.upstream_user_agent
     headers: dict[str, str] = {
         "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
+        "accept-language": settings.upstream_accept_language,
         "content-type": "text/plain;charset=UTF-8",
         "origin": settings.origin,
         "referer": settings.referer_url(chat_id),
@@ -123,7 +124,7 @@ def build_page_headers(settings: Settings) -> dict[str, str]:
     ua = settings.upstream_user_agent
     headers = {
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "accept-language": "en-US,en;q=0.9",
+        "accept-language": settings.upstream_accept_language,
         "user-agent": ua,
         "sec-ch-ua": sec_ch_ua(ua),
         "sec-ch-ua-mobile": "?0",

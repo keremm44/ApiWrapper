@@ -34,9 +34,17 @@ class UpstreamPayload(BaseModel):
     modality: str = "chat"
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
 
-    def to_wire(self) -> dict[str, Any]:
-        """Upstream'in beklediği alan adlarıyla (camelCase) sözlük döndürür."""
-        return self.model_dump(by_alias=True, exclude_none=True)
+    def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:
+        """Upstream'in beklediği alan adlarıyla (camelCase) sözlük döndürür.
+
+        `recaptcha_field` hedefe göre değişir (`recaptchaV3Token` /
+        `recaptchaV2Token`); varsayılan alan adı buna göre yeniden adlandırılır.
+        """
+        data = self.model_dump(by_alias=True, exclude_none=True)
+        token = data.pop("recaptchaV3Token", "")
+        field = (recaptcha_field or "recaptchaV3Token").strip()
+        data[field] = token
+        return data
 
 
 class EventType(str, Enum):

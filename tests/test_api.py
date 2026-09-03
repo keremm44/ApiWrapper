@@ -352,7 +352,12 @@ def test_authorization_header_sent_to_upstream():
     route = stream_route(respx).mock(
         return_value=httpx.Response(200, content=ai_stream("ok"))
     )
-    app = create_app(make_settings(upstream_cookie=f"access_token={token}; theme=dark"))
+    app = create_app(
+        make_settings(
+            upstream_cookie=f"access_token={token}; theme=dark",
+            upstream_auth_from_cookie=True,
+        )
+    )
     with TestClient(app) as local:
         local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
         assert local.post(
@@ -363,3 +368,75 @@ def test_authorization_header_sent_to_upstream():
     sent = route.calls[0].request.headers
     assert sent["authorization"] == f"Bearer {token}"
     assert sent["cookie"] == f"access_token={token}; theme=dark"
+
+
+# ---------------------------------------------- captcha alan adı (V2 / V3)
+@respx.mock
+def test_recaptcha_field_name_is_configurable():
+    """Hedef `recaptchaV2Token` bekliyorsa gövde alan adı ona göre yazılmalı."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    route = stream_route(respx).mock(
+        return_value=httpx.Response(200, content=ai_stream("ok"))
+    )
+    app = create_app(
+        make_settings(
+            recaptcha_provider="static",
+            recaptcha_static_token="tok-abc",
+            upstream_recaptcha_field="recaptchaV2Token",
+        )
+    )
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        assert local.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        ).status_code == 200
+
+    sent = json.loads(route.calls[0].request.content.decode())
+    assert sent["recaptchaV2Token"] == "tok-abc"
+    assert "recaptchaV3Token" not in sent
+
+
+@respx.mock
+def test_accept_language_is_configurable():
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    route = stream_route(respx).mock(
+        return_value=httpx.Response(200, content=ai_stream("ok"))
+    )
+    app = create_app(make_settings(upstream_accept_language="tr-TR,tr;q=0.9,en-US;q=0.8"))
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        local.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert route.calls[0].request.headers["accept-language"] == "tr-TR,tr;q=0.9,en-US;q=0.8"
+
+
+@respx.mock
+def test_no_authorization_header_by_default():
+    """Tarayıcı cURL'ünde authorization yoksa biz de göndermemeliyiz."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    route = stream_route(respx).mock(
+        return_value=httpx.Response(200, content=ai_stream("ok"))
+    )
+    app = create_app(make_settings(upstream_cookie="arena-auth-prod-v1.0=base64-abc"))
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        local.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert "authorization" not in route.calls[0].request.headers
