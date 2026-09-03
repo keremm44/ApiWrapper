@@ -45,6 +45,7 @@ CAPTCHA_FIELDS: tuple[str, ...] = (
 #: `.env` içine yazılacak anahtarların sırası.
 ENV_ORDER: tuple[str, ...] = (
     "TARGET_DOMAIN",
+    "UPSTREAM_STREAM_PATH",
     "UPSTREAM_RECAPTCHA_FIELD",
     "UPSTREAM_ACCEPT_LANGUAGE",
     "UPSTREAM_USER_AGENT",
@@ -73,6 +74,14 @@ TELEMETRY_HOSTS: tuple[str, ...] = (
     "newrelic",
     "intercom",
     "hotjar",
+)
+
+#: Varsayılan akış yolu (app/core/config.py ile aynı).
+DEFAULT_STREAM_PATH = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
+
+#: URL yolunda sohbet kimliği olarak geçebilecek UUID biçimi.
+_UUID_RE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
 #: Hedef akış ucunu tanıyan iz: cURL doğru istekten alınmışsa yolda bulunur.
@@ -130,6 +139,21 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
             f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir."
         )
 
+    # --- akış yolu (sabit varsayım yerine cURL'deki gerçek yol)
+    if split and split.path:
+        template = _stream_path_template(split.path, body)
+        if template:
+            env["UPSTREAM_STREAM_PATH"] = template
+            if template != DEFAULT_STREAM_PATH:
+                warnings.append(
+                    f"Akış yolu varsayılandan farklı, .env'e yazıldı: {template}"
+                )
+        else:
+            warnings.append(
+                f"URL yolundaki sohbet kimliği tanınamadı ({split.path}); "
+                "UPSTREAM_STREAM_PATH elle ayarlanmalı."
+            )
+
     # --- başlıklar
     cookie = headers.get("cookie", "").strip()
     if cookie:
@@ -178,6 +202,26 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
         warnings.append("Gövde JSON olarak ayrıştırılamadı; cURL eksik kopyalanmış olabilir.")
 
     return env, warnings, model_id
+
+
+def _stream_path_template(path: str, body: dict[str, Any]) -> str | None:
+    """URL yolundaki sohbet kimliğini ``{chat_id}`` yer tutucusuna çevirir.
+
+    Upstream yolu sürümlenebildiği için (ör. ``/nextjs-api/stream/...`` yerine
+    ``/api/stream/...``) sabit varsayım HTTP 404 üretir. Yol cURL'den alınır ve
+    yalnızca kimlik kısmı parametreleştirilir.
+    """
+    chat_id = body.get("id")
+    # Yalnızca tam bir yol segmentiyle eşleşmeli: kısa bir "id" değeri yolun
+    # ortasındaki harflere denk gelip yolu bozabilir.
+    if isinstance(chat_id, str) and chat_id:
+        segments = path.split("/")
+        if chat_id in segments:
+            return "/".join("{chat_id}" if seg == chat_id else seg for seg in segments)
+    match = _UUID_RE.search(path)
+    if match:
+        return path[: match.start()] + "{chat_id}" + path[match.end() :]
+    return None
 
 
 def merge_env(path: Path, updates: dict[str, str]) -> str:

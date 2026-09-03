@@ -205,3 +205,55 @@ def test_correct_endpoint_produces_no_path_or_host_warning(sample):
     _, warnings, _ = build_settings(parse_curl(curl))
     assert not any("post-to-evaluation" in w for w in warnings)
     assert not any(w.startswith("KRİTİK") for w in warnings)
+
+
+# ------------------------- akış yolu cURL'den alınmalı
+def _curl_with_path(path: str, chat_id: str) -> str:
+    body = {
+        "id": chat_id,
+        "modelAId": "019b1449-0313-7911-b836-419e2ed79b2e",
+        "modality": "chat",
+        "recaptchaV2Token": "tok" + "x" * 40,
+    }
+    return (
+        f"curl 'https://target.ai{path}' "
+        "-H 'cookie: a-auth-token=base64-eyJhY2Nlc3NfdG9rZW4iOiAiYS5iLmMifQ==' "
+        f"--data-raw '{json.dumps(body)}'"
+    )
+
+
+def test_stream_path_is_taken_from_curl_not_assumed():
+    """Yol sürümlenirse sabit varsayım HTTP 404 üretir (gerçek raporda görüldü)."""
+    chat_id = "ffd33ec3-8749-4263-9201-fe7248be8694"
+    curl = _curl_with_path(f"/api/stream/post-to-evaluation/{chat_id}", chat_id)
+    env, _, _ = build_settings(parse_curl(curl))
+    assert env["UPSTREAM_STREAM_PATH"] == "/api/stream/post-to-evaluation/{chat_id}"
+
+
+def test_stream_path_placeholder_replaces_only_the_chat_id():
+    chat_id = "ffd33ec3-8749-4263-9201-fe7248be8694"
+    path = f"/nextjs-api/stream/post-to-evaluation/{chat_id}/retry"
+    env, _, _ = build_settings(parse_curl(_curl_with_path(path, chat_id)))
+    assert env["UPSTREAM_STREAM_PATH"] == "/nextjs-api/stream/post-to-evaluation/{chat_id}/retry"
+
+
+def test_stream_path_falls_back_to_uuid_detection():
+    """Gövdedeki 'id' yoldaki kimlikten farklıysa UUID sezgisi devreye girer."""
+    path = "/nextjs-api/stream/post-to-evaluation/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    env, _, _ = build_settings(parse_curl(_curl_with_path(path, "baska-id")))
+    assert env["UPSTREAM_STREAM_PATH"] == "/nextjs-api/stream/post-to-evaluation/{chat_id}"
+
+
+def test_short_id_does_not_corrupt_path():
+    """Kısa bir 'id' değeri yol içinde harf dizisine denk gelmemeli."""
+    path = "/nextjs-api/stream/post-to-evaluation"
+    env, _, _ = build_settings(parse_curl(_curl_with_path(path, "xt")))
+    assert "{chat_id}" not in env.get("UPSTREAM_STREAM_PATH", "")
+
+
+def test_warns_when_chat_id_missing_from_path():
+    env, warnings, _ = build_settings(
+        parse_curl(_curl_with_path("/nextjs-api/stream/post-to-evaluation", "x"))
+    )
+    assert "UPSTREAM_STREAM_PATH" not in env
+    assert any("UPSTREAM_STREAM_PATH" in w for w in warnings)
