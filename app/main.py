@@ -1,0 +1,168 @@
+"""FastAPI uygulama fabrikası ve yaşam döngüsü yönetimi."""
+
+from __future__ import annotations
+
+import contextlib
+from collections.abc import AsyncIterator
+from pathlib import Path
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
+
+from app.api.v1 import admin, chat, health, models
+from app.core.config import Settings, get_settings
+from app.core.errors import register_exception_handlers
+from app.core.logging import configure_logging, get_logger
+from app.core.middleware import (
+    AccessLogMiddleware,
+    BodyLimitMiddleware,
+    RateLimitMiddleware,
+    RequestIDMiddleware,
+)
+from app.services.completion_service import CompletionService
+from app.services.model_registry import ModelEntry, ModelRegistry
+from app.services.recaptcha import create_recaptcha_provider
+from app.services.session_manager import SessionManager
+from app.upstream.client import UpstreamClient
+
+logger = get_logger(__name__)
+
+DESCRIPTION = """
+OpenAI uyumlu bir REST cephesi üzerinden harici bir Web LLM servisine erişim.
+
+* `POST /v1/chat/completions` — streaming (SSE) ve non-streaming
+* `POST /v1/completions` — eski metin tamamlama biçimi
+* `GET  /v1/models` — yapılandırılmış modeller
+* `GET  /health`, `GET /metrics` — işletim uç noktaları
+"""
+
+
+def _load_registry(settings: Settings) -> ModelRegistry:
+    """Model dosyasını yükler; yoksa güvenli bir varsayılana düşer."""
+    path = Path(settings.models_file)
+    try:
+        return ModelRegistry.from_file(path)
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning("models_file_fallback", path=str(path), error=str(exc))
+        return ModelRegistry(
+            [
+                ModelEntry(
+                    id="default-model",
+                    upstream_id="default-model",
+                    description="Placeholder entry; configure config/models.yaml.",
+                )
+            ]
+        )
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Kaynakları başlatır ve düzgünce kapatır."""
+    settings: Settings = app.state.settings
+
+    upstream = UpstreamClient(settings)
+    await upstream.startup()
+
+    recaptcha = create_recaptcha_provider(settings)
+    try:
+        await recaptcha.startup()
+    except Exception as exc:
+        # Captcha sağlayıcısı başlatılamazsa servis yine ayakta kalsın;
+        # hata ilk istekte anlamlı biçimde raporlanır.
+        logger.error("recaptcha_startup_failed", provider=recaptcha.name, error=str(exc))
+
+    sessions = SessionManager(settings, warmup=upstream.warmup)
+    registry = _load_registry(settings)
+
+    app.state.upstream = upstream
+    app.state.recaptcha = recaptcha
+    app.state.sessions = sessions
+    app.state.registry = registry
+    app.state.completion_service = CompletionService(
+        settings=settings,
+        upstream=upstream,
+        registry=registry,
+        sessions=sessions,
+        recaptcha=recaptcha,
+    )
+
+    logger.info(
+        "application_started",
+        version=settings.app_version,
+        models=len(registry),
+        recaptcha_provider=recaptcha.name,
+        upstream=settings.base_url,
+    )
+    try:
+        yield
+    finally:
+        with contextlib.suppress(Exception):
+            await recaptcha.shutdown()
+        with contextlib.suppress(Exception):
+            await upstream.shutdown()
+        await sessions.clear()
+        logger.info("application_stopped")
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
+    settings = settings or get_settings()
+    configure_logging(settings.log_level, settings.log_json)
+
+    app = FastAPI(
+        title=settings.app_name,
+        version=settings.app_version,
+        description=DESCRIPTION,
+        lifespan=lifespan,
+        root_path=settings.root_path,
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
+    )
+    app.state.settings = settings
+
+    # Middleware sırası: son eklenen en dışta çalışır.
+    app.add_middleware(RateLimitMiddleware, settings=settings)
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_body_bytes)
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_origins,
+        allow_credentials=settings.cors_allow_credentials,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["x-request-id", "x-response-time-ms"],
+    )
+    app.add_middleware(AccessLogMiddleware)
+    app.add_middleware(RequestIDMiddleware)
+
+    register_exception_handlers(app)
+
+    app.include_router(health.router)
+    app.include_router(chat.router, prefix="/v1")
+    app.include_router(models.router, prefix="/v1")
+    app.include_router(admin.router, prefix="/v1")
+
+    return app
+
+
+app = create_app()
+
+
+def main() -> None:  # pragma: no cover - CLI giriş noktası
+    import uvicorn
+
+    settings = get_settings()
+    uvicorn.run(
+        "app.main:app",
+        host=settings.host,
+        port=settings.port,
+        log_config=None,  # structlog zaten yapılandırıldı
+        access_log=False,
+        reload=settings.debug,
+    )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

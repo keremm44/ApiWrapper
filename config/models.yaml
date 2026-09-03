@@ -1,0 +1,35 @@
+# Model kayıt defteri.
+#
+# id           → istemcinin "model" alanında göndereceği ad (OpenAI tarafı)
+# upstream_id  → upstream gövdesindeki "modelAId" değeri
+# aliases      → aynı modele işaret eden alternatif adlar (opsiyonel)
+#
+# Gerçek upstream model kimliklerini hedef servisin ağ trafiğinden alıp buraya yazın.
+# Kodda hiçbir model kimliği gömülü DEĞİLDİR; tek kaynak bu dosyadır.
+
+default: gpt-4o-mini
+
+models:
+  - id: gpt-4o-mini
+    upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_1
+    owned_by: upstream
+    description: Hızlı ve ucuz genel amaçlı model.
+    aliases:
+      - gpt-4o-mini-2024-07-18
+      - fast
+
+  - id: gpt-4o
+    upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_2
+    owned_by: upstream
+    description: Yüksek kaliteli genel amaçlı model.
+    aliases:
+      - gpt-4
+      - default
+
+  - id: reasoning-pro
+    upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_3
+    owned_by: upstream
+    description: Uzun düşünme zincirli akıl yürütme modeli.
+    aliases:
+      - o1
+      - reasoner
