@@ -30,3 +30,7 @@ jobs:
 
       - name: Test
         run: pytest -q
+
+# NOT: Bu dosya, GitHub App'in `workflows` izni bulunmadığı için
+# `.github/workflows/` altına push edilemedi. Etkinleştirmek için:
+#   mkdir -p .github/workflows && git mv ci/github-actions-ci.yml .github/workflows/ci.yml
