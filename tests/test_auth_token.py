@@ -343,3 +343,38 @@ def test_base64_decoding_does_not_create_false_positives():
 def test_missing_token_does_not_raise():
     """Token yoksa hata değil, None dönmeli; istek Cookie ile devam eder."""
     assert extract_access_token("theme=dark; cf_clearance=" + "Q" * 40) is None
+
+
+# ------------------------- sağlayıcı öneki bilinmeyen oturum çerezleri
+_NOISE = (
+    "__cf_bm=abc; _dd_s=rum=0; _ga=GA1.1.123; _ga_DB32ZN1WHB=x; "
+    "cf_clearance=Zz0123456789abcdefghij; sidebar_state=true; "
+    "user_country_code=TR; _visit_id=v1; "
+    "ph_phc_LG7IJbVJqBsk584rbcKca0D5lV2vHguiijDrVji7yDM_posthog=p"
+)
+
+
+@pytest.mark.parametrize(
+    "cookie_name",
+    [
+        "arena-auth-prod-v1.0",
+        "lmarena-auth-prod-v1.0",
+        "myapp-auth-prod-v1.0",
+        "-auth-prod-v1.0",
+        "sb-abcdefgh-auth-token.0",
+    ],
+)
+def test_auth_cookie_found_regardless_of_vendor_prefix(cookie_name: str):
+    """Ad öneki ne olursa olsun '...auth...' içeren çerez taranmalı.
+
+    Gerçek dünyada çerez adı '<proje>-auth-prod-v1.0' biçiminde olabiliyor ve
+    'arena-auth' gibi sabit ipuçlarına takılmıyordu.
+    """
+    payload = base64.b64encode(json.dumps({"access_token": TOKEN}).encode()).decode()
+    header = f"{_NOISE}; {cookie_name}=base64-{payload}"
+    assert extract_access_token(header) == TOKEN
+
+
+def test_no_token_when_only_tracking_cookies_present():
+    """Yalnızca analitik/Cloudflare çerezleri varsa token uydurulmamalı."""
+    assert extract_access_token(_NOISE) is None

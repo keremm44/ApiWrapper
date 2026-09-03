@@ -12,6 +12,8 @@ from app.core.security import api_key_dependency
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
 from app.upstream.auth import (
+    DEFAULT_COOKIE_HINTS,
+    NEVER_TOKEN_COOKIES,
     extract_access_token,
     looks_like_jwt,
     parse_cookie_header,
@@ -111,6 +113,7 @@ async def auth_diagnostics(request: Request) -> dict[str, Any]:
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
         "cookie_count": len(cookies),
+        "session_cookie_candidates": _session_cookie_candidates(cookies),
         "token": {
             "found": bool(effective),
             "masked": mask_value(effective) if effective else None,
@@ -120,3 +123,34 @@ async def auth_diagnostics(request: Request) -> dict[str, Any]:
             "expired": (remaining is not None and remaining <= 0),
         },
     }
+
+
+def _session_cookie_candidates(cookies: dict[str, str]) -> list[dict[str, object]]:
+    """Oturum çerezi olabilecek adayları, neden elendikleriyle birlikte listeler.
+
+    Token bulunamadığında hangi çerezin incelendiğini ve hangi adımda elendiğini
+    göstererek ``UPSTREAM_TOKEN_COOKIE_NAMES`` ayarını kolaylaştırır.
+    """
+    candidates: list[dict[str, object]] = []
+    for name, value in sorted(cookies.items()):
+        lowered = name.lower()
+        if lowered in NEVER_TOKEN_COOKIES:
+            continue
+        matched_hint = next((h for h in DEFAULT_COOKIE_HINTS if h in lowered), None)
+        decoded = extract_access_token(f"{name}={value}")
+        if matched_hint is None and decoded is None:
+            continue
+        candidates.append(
+            {
+                "cookie": name,
+                "matched_hint": matched_hint,
+                "value_length": len(value),
+                "token_extracted": decoded is not None,
+                "reason": (
+                    "token extracted"
+                    if decoded
+                    else "name matched but value did not decode to a JWT/JSON token"
+                ),
+            }
+        )
+    return candidates

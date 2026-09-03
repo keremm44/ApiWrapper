@@ -32,6 +32,10 @@ logger = get_logger(__name__)
 
 #: Çerez adı içinde aranacak varsayılan ipuçları (küçük harfe indirgenmiş, kısmi eşleşme).
 DEFAULT_COOKIE_HINTS: tuple[str, ...] = (
+    # Genel "auth" eşleşmesi: sağlayıcı/proje öneki ne olursa olsun
+    # (ör. "<proje>-auth-prod-v1.0") oturum çerezini yakalar. Yanlış pozitif
+    # riski NEVER_TOKEN_COOKIES filtresi ve değer doğrulamasıyla sınırlanır.
+    "auth",
     "arena-auth",
     "arena_auth",
     "access_token",
@@ -90,6 +94,10 @@ NEVER_TOKEN_COOKIES = frozenset(
         "intercom-session",
         "csrftoken",
         "xsrf-token",
+        "_dd_s",
+        "_visit_id",
+        "sidebar_state",
+        "user_country_code",
     }
 )
 
