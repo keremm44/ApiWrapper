@@ -61,6 +61,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Kaynakları başlatır ve düzgünce kapatır."""
     settings: Settings = app.state.settings
 
+    domain = settings.target_domain.strip()
+    if not domain or domain in ("localhost", "127.0.0.1"):
+        logger.warning(
+            "target_domain_not_configured",
+            target_domain=domain or "(empty)",
+            hint=(
+                "TARGET_DOMAIN is not set to a real host. Every upstream request will "
+                "fail. Set it in .env WITHOUT the scheme, e.g. TARGET_DOMAIN=example.com"
+            ),
+        )
+
     upstream = UpstreamClient(settings)
     await upstream.startup()
 

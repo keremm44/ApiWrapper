@@ -207,16 +207,39 @@ def _candidate_strings(value: str) -> list[str]:
     plain = unquote(value)
     push(plain)
 
-    # Supabase ve benzerleri gövdeyi "base64-" ön ekiyle taşır.
+    # Supabase ve benzerleri gövdeyi "base64-" ön ekiyle taşır; bazı sürümler
+    # ön ek olmadan doğrudan base64 gönderir. Her iki durumu da çözmeyi dene.
     for candidate in list(seen):
+        body = candidate
         for prefix in ("base64-", "base64_", "b64-"):
             if candidate.startswith(prefix):
                 body = candidate[len(prefix) :]
-                try:
-                    push(_b64url_decode(body).decode("utf-8"))
-                except (ValueError, binascii.Error, UnicodeDecodeError):
-                    continue
+                break
+        decoded = _try_b64_decode(body)
+        if decoded is not None:
+            push(decoded)
     return seen
+
+
+def _try_b64_decode(value: str) -> str | None:
+    """Base64 (standart veya URL-safe) çözmeyi dener; JSON/JWT çıkarsa döndürür.
+
+    Ön eksiz çerezlerde yanlış pozitifi önlemek için sonuç yalnızca anlamlı
+    görünüyorsa (JSON gövdesi ya da JWT) kabul edilir.
+    """
+    candidate = value.strip()
+    if len(candidate) < 16:
+        return None
+    try:
+        padded = candidate + "=" * (-len(candidate) % 4)
+        raw = base64.b64decode(padded, altchars=b"-_", validate=False)
+        text = raw.decode("utf-8")
+    except (ValueError, binascii.Error, UnicodeDecodeError):
+        return None
+    stripped = text.strip()
+    if stripped.startswith(("{", "[")) or _JWT_RE.match(stripped):
+        return stripped
+    return None
 
 
 def _scan_json(node: Any, depth: int = 0) -> str | None:

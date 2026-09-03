@@ -12,11 +12,15 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.upstream.auth import (
     is_token_expired,
+    parse_cookie_header,
     resolve_bearer_token,
     token_seconds_remaining,
 )
 
 logger = get_logger(__name__)
+
+#: Token bulunamadigi uyarisi her istekte degil, sureç basina bir kez verilir.
+_WARNED_NO_TOKEN = False
 
 _CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
 
@@ -64,12 +68,19 @@ def build_authorization(settings: Settings) -> str | None:
         cookie_names=settings.upstream_token_cookie_names,
     )
     if not token:
-        if settings.upstream_cookie or settings.upstream_access_token:
+        global _WARNED_NO_TOKEN
+        if (settings.upstream_cookie or settings.upstream_access_token) and not _WARNED_NO_TOKEN:
+            _WARNED_NO_TOKEN = True
+            names = sorted(parse_cookie_header(settings.upstream_cookie))
             logger.warning(
                 "access_token_not_found",
+                cookies_seen=names,
                 hint=(
-                    "Could not extract an access token. Set UPSTREAM_ACCESS_TOKEN directly "
-                    "or name the cookie via UPSTREAM_TOKEN_COOKIE_NAMES."
+                    "No access token could be extracted from UPSTREAM_COOKIE. The request "
+                    "is still sent with the Cookie header only. If upstream returns 401, "
+                    "set UPSTREAM_ACCESS_TOKEN directly, or point at the right cookie with "
+                    "UPSTREAM_TOKEN_COOKIE_NAMES. If upstream works fine, set "
+                    "UPSTREAM_AUTH_FROM_COOKIE=false to silence this."
                 ),
             )
         return None

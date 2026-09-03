@@ -173,11 +173,16 @@ class Settings(BaseSettings):
     @field_validator("target_domain", mode="before")
     @classmethod
     def _strip_scheme(cls, v: object) -> object:
+        """Şema, tırnak, sondaki slash ve yol kısmını temizler."""
         if isinstance(v, str):
-            v = v.strip().rstrip("/")
+            v = v.strip().strip('"').strip("'").strip()
             for prefix in ("https://", "http://"):
                 if v.startswith(prefix):
                     v = v[len(prefix) :]
+            v = v.rstrip("/")
+            # Yanlislikla tam URL yapistirilmissa yol kismini at.
+            if "/" in v:
+                v = v.split("/", 1)[0]
         return v
 
     @field_validator("log_level", mode="before")

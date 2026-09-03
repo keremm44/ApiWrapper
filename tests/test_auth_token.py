@@ -296,3 +296,50 @@ def test_arena_cookie_preferred_over_cloudflare():
     header = _arena_cookie(TOKEN)
     assert "cf_clearance" in header
     assert extract_access_token(header) == TOKEN
+
+
+# ------------------------- base64 çerezler (ön ekli ve ön eksiz)
+def _b64_json(token: str, *, urlsafe: bool = False, prefix: str = "") -> str:
+    raw = json.dumps({"access_token": token, "refresh_token": "r1"}).encode()
+    encoded = (
+        base64.urlsafe_b64encode(raw).decode().rstrip("=")
+        if urlsafe
+        else base64.b64encode(raw).decode()
+    )
+    return prefix + encoded
+
+
+def test_base64_cookie_without_prefix_is_decoded():
+    """Bazı sürümler 'base64-' ön eki koymadan doğrudan base64 gönderir."""
+    header = f"arena-auth-prod-v1.0={_b64_json(TOKEN)}"
+    assert extract_access_token(header) == TOKEN
+
+
+def test_base64_cookie_without_prefix_alongside_cloudflare():
+    header = (
+        f"arena-auth-prod-v1.0={_b64_json(TOKEN)}; "
+        "cf_clearance=abcdefghijklmnopqrstuvwxyz123456"
+    )
+    assert extract_access_token(header) == TOKEN
+
+
+def test_url_encoded_base64_cookie():
+    """'=' dolgusu %3D olarak kodlanmış olabilir."""
+    header = f"arena-auth-prod-v1.0={quote(_b64_json(TOKEN))}"
+    assert extract_access_token(header) == TOKEN
+
+
+def test_urlsafe_base64_without_prefix():
+    header = f"sb-auth-token={_b64_json(TOKEN, urlsafe=True)}"
+    assert extract_access_token(header) == TOKEN
+
+
+def test_base64_decoding_does_not_create_false_positives():
+    """Rastgele base64 benzeri değerler token sanılmamalı."""
+    assert extract_access_token("theme=" + "QUJDREVGR0hJSktMTU5PUFFSU1Q=") is None
+    assert extract_access_token("sid=" + "Z" * 64) is None
+
+
+def test_missing_token_does_not_raise():
+    """Token yoksa hata değil, None dönmeli; istek Cookie ile devam eder."""
+    assert extract_access_token("theme=dark; cf_clearance=" + "Q" * 40) is None
