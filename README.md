@@ -110,6 +110,7 @@ Upstream token'ı reddederse (403) cache otomatik geçersizleşir ve istek **bir
 
 ```bash
 make test     # 68 test: parser, adapters, çekirdek, uçtan uca API
+python scripts/test_client.py  # canlı servise karşı 14 kontrol
 make lint     # ruff
 make docker   # docker compose up --build
 ```
@@ -137,3 +138,9 @@ parametrelerin davranışını belirler:
 Bu araç yalnızca eğitim ve birlikte çalışabilirlik amaçlıdır. Hedef servisin
 kullanım koşullarına (ToS), oran sınırlarına ve yürürlükteki mevzuata uyum
 tamamen kullanıcının sorumluluğundadır.
+
+## Teslimat Raporu
+
+Tam teknik teslimat özeti (klasör ağacı, kritik dosya kodları, konfigürasyon,
+çalıştırma/test talimatları, edge-case ve risk analizi):
+**[`docs/DELIVERY_REPORT.md`](docs/DELIVERY_REPORT.md)**
