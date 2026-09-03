@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     )
     #: Ham Cookie başlığı (oturum gerekiyorsa).
     upstream_cookie: str = ""
+    #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).
+    upstream_access_token: str = ""
+    #: Cookie içinden `access_token` ayıklanıp `Authorization: Bearer` olarak eklensin mi?
+    upstream_auth_from_cookie: bool = True
+    #: Token'ın aranacağı çerez adları (virgülle ayrılmış). Boşsa sezgisel arama yapılır.
+    upstream_token_cookie_names: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    #: Authorization başlığının şeması. Boş bırakılırsa token ham olarak gönderilir.
+    upstream_auth_scheme: str = "Bearer"
+    #: Token süresi dolmuşsa uyar (JWT `exp`); istek yine de denenir.
+    upstream_warn_on_expired_token: bool = True
     #: Ek başlıklar, "K1=V1;K2=V2" biçiminde.
     upstream_extra_headers: str = ""
     upstream_proxy: str | None = None
@@ -133,7 +143,9 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
 
     # ----------------------------------------------------------- validators
-    @field_validator("api_keys", "cors_origins", mode="before")
+    @field_validator(
+        "api_keys", "cors_origins", "upstream_token_cookie_names", mode="before"
+    )
     @classmethod
     def _split_csv(cls, v: object) -> object:
         """Virgülle ayrılmış listeyi (veya JSON dizisini) listeye çevirir."""

@@ -7,11 +7,19 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import get_recaptcha, get_sessions, get_upstream
+from app.core.logging import mask_value
 from app.core.security import api_key_dependency
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
+from app.upstream.auth import (
+    extract_access_token,
+    looks_like_jwt,
+    parse_cookie_header,
+    token_seconds_remaining,
+)
 from app.upstream.breaker import BreakerState
 from app.upstream.client import UpstreamClient
+from app.upstream.headers import build_authorization
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(api_key_dependency)])
 
@@ -71,5 +79,44 @@ async def effective_config(request: Request) -> dict[str, Any]:
             "max_messages": settings.max_messages,
             "max_prompt_chars": settings.max_prompt_chars,
             "max_concurrent_upstream": settings.max_concurrent_upstream,
+        },
+    }
+
+
+@router.get("/auth", summary="Diagnose upstream credential extraction")
+async def auth_diagnostics(request: Request) -> dict[str, Any]:
+    """Cookie'den `access_token` ayıklamasının sonucunu **token'ı ifşa etmeden** gösterir.
+
+    401 sorunlarını teşhis etmek için: token bulundu mu, hangi çerezler mevcut,
+    JWT mi, ne zaman doluyor?
+    """
+    settings = request.app.state.settings
+    cookies = parse_cookie_header(settings.upstream_cookie)
+    token = extract_access_token(
+        settings.upstream_cookie, cookie_names=settings.upstream_token_cookie_names
+    ) if settings.upstream_auth_from_cookie else None
+    effective = settings.upstream_access_token.strip() or token
+    header_value = build_authorization(settings)
+
+    remaining = token_seconds_remaining(effective) if effective else None
+    return {
+        "authorization_header_will_be_sent": bool(header_value),
+        "auth_scheme": settings.upstream_auth_scheme,
+        "source": (
+            "UPSTREAM_ACCESS_TOKEN"
+            if settings.upstream_access_token.strip()
+            else ("cookie" if token else None)
+        ),
+        "extract_from_cookie_enabled": settings.upstream_auth_from_cookie,
+        "configured_cookie_names": settings.upstream_token_cookie_names,
+        "cookie_names_present": sorted(cookies),
+        "cookie_count": len(cookies),
+        "token": {
+            "found": bool(effective),
+            "masked": mask_value(effective) if effective else None,
+            "length": len(effective) if effective else 0,
+            "is_jwt": looks_like_jwt(effective) if effective else False,
+            "expires_in_seconds": int(remaining) if remaining is not None else None,
+            "expired": (remaining is not None and remaining <= 0),
         },
     }

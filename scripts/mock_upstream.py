@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 app = FastAPI(title="Mock Upstream LLM")
+
+#: True ise, gerçek hedef gibi davranıp Authorization başlığını zorunlu kılar.
+REQUIRE_AUTH = os.getenv("MOCK_REQUIRE_AUTH", "1") not in ("0", "false", "False")
 
 
 @app.get("/c/{chat_id}")
@@ -24,7 +28,15 @@ async def chat_page(chat_id: str) -> HTMLResponse:
 
 
 @app.post("/nextjs-api/stream/post-to-evaluation/{chat_id}")
-async def stream(chat_id: str, request: Request) -> StreamingResponse:
+async def stream(chat_id: str, request: Request):
+    if REQUIRE_AUTH:
+        authorization = request.headers.get("authorization", "")
+        if not authorization.lower().startswith("bearer ") or len(authorization) < 20:
+            return JSONResponse(
+                {"error": "Unauthorized: missing or invalid access token"},
+                status_code=401,
+            )
+
     raw = (await request.body()).decode("utf-8")
     try:
         payload = json.loads(raw)

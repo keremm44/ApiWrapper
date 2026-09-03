@@ -9,6 +9,14 @@ from __future__ import annotations
 import re
 
 from app.core.config import Settings
+from app.core.logging import get_logger
+from app.upstream.auth import (
+    is_token_expired,
+    resolve_bearer_token,
+    token_seconds_remaining,
+)
+
+logger = get_logger(__name__)
 
 _CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
 
@@ -39,6 +47,51 @@ def sec_ch_ua(user_agent: str) -> str:
     )
 
 
+def build_authorization(settings: Settings) -> str | None:
+    """`Authorization` başlık değerini üretir.
+
+    Hedef servis yalnızca Cookie'yi yeterli bulmadığı için token, `UPSTREAM_ACCESS_TOKEN`
+    veya oturum çerezinin içinden ayıklanır. Token bulunamazsa `None` döner ve istek
+    yalnızca Cookie ile gönderilir.
+    """
+    if not settings.upstream_auth_from_cookie and not settings.upstream_access_token:
+        return None
+
+    token = resolve_bearer_token(
+        explicit_token=settings.upstream_access_token,
+        cookie_header=settings.upstream_cookie if settings.upstream_auth_from_cookie else "",
+        cookie_names=settings.upstream_token_cookie_names,
+    )
+    if not token:
+        if settings.upstream_cookie or settings.upstream_access_token:
+            logger.warning(
+                "access_token_not_found",
+                hint=(
+                    "Could not extract an access token. Set UPSTREAM_ACCESS_TOKEN directly "
+                    "or name the cookie via UPSTREAM_TOKEN_COOKIE_NAMES."
+                ),
+            )
+        return None
+
+    if settings.upstream_warn_on_expired_token and is_token_expired(token):
+        remaining = token_seconds_remaining(token)
+        logger.warning(
+            "access_token_expired",
+            expired_seconds_ago=abs(int(remaining)) if remaining is not None else None,
+            hint="Refresh UPSTREAM_COOKIE / UPSTREAM_ACCESS_TOKEN; upstream will return 401.",
+        )
+
+    scheme = settings.upstream_auth_scheme.strip()
+    return f"{scheme} {token}" if scheme else token
+
+
+def _apply_auth(headers: dict[str, str], settings: Settings) -> None:
+    """Authorization başlığını yerinde ekler (varsa)."""
+    authorization = build_authorization(settings)
+    if authorization:
+        headers["authorization"] = authorization
+
+
 def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
     """Stream uç noktası için tam başlık kümesi."""
     ua = settings.upstream_user_agent
@@ -59,6 +112,8 @@ def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
     }
     if settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
+    _apply_auth(headers, settings)
+    # Kullanıcı tanımlı başlıklar en son uygulanır; bilinçli override'a izin verilir.
     headers.update(settings.parsed_extra_headers())
     return headers
 

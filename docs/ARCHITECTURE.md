@@ -34,6 +34,9 @@
 │    ├─ Oturum Yöneticisi  services/session_manager.py             │
 │    │     • chat_id / userMessageId / modelAMessageId üretimi     │
 │    │     • cookie jar, çerez yenileme, oturum ısıtma (warm-up)   │
+│    ├─ Kimlik Çözücü  upstream/auth.py                            │
+│    │     • cookie → access_token ayıklama (JSON/base64/parçalı)  │
+│    │     • Authorization: Bearer üretimi, JWT exp uyarısı        │
 │    ├─ reCAPTCHA v3 Sağlayıcısı  services/recaptcha/*             │
 │    └─ Upstream İstemcisi  upstream/client.py (httpx.AsyncClient) │
 │         • HTTP/2, connection pool, retry+jitter, circuit breaker │

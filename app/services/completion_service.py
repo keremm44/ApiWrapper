@@ -34,6 +34,7 @@ from app.upstream.client import UpstreamClient
 from app.upstream.exceptions import (
     CircuitOpen,
     RecaptchaRejected,
+    UpstreamAuthRejected,
     UpstreamHTTPError,
     UpstreamNetworkError,
     UpstreamProtocolError,
@@ -137,6 +138,15 @@ class CompletionService:
             return UpstreamUnavailableError(
                 "Upstream service is temporarily unavailable (circuit breaker open). "
                 "Please retry shortly."
+            )
+        if isinstance(exc, UpstreamAuthRejected):
+            return APIWrapperError(
+                "The upstream service rejected the session credentials (401). "
+                "Refresh UPSTREAM_COOKIE (and/or UPSTREAM_ACCESS_TOKEN) in the "
+                "environment; the extracted access_token is missing or expired.",
+                status_code=502,
+                err_type="upstream_error",
+                code="upstream_unauthorized",
             )
         if isinstance(exc, RecaptchaRejected):
             return RecaptchaError(

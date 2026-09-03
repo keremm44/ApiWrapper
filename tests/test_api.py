@@ -293,3 +293,73 @@ def test_rate_limit_returns_429(limit):
         local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
         statuses = [local.get("/v1/models").status_code for _ in range(limit + 3)]
     assert 429 in statuses
+
+
+# ------------------------------------------------- upstream auth (401) yolu
+@respx.mock
+def test_upstream_401_reported_as_credentials_problem(client):
+    stream_route(respx).mock(
+        return_value=httpx.Response(401, content=b'{"error":"Unauthorized: invalid token"}')
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "upstream_unauthorized"
+    assert "UPSTREAM_COOKIE" in error["message"]
+
+
+@respx.mock
+def test_empty_401_body_treated_as_auth_not_captcha(client):
+    stream_route(respx).mock(return_value=httpx.Response(401, content=b""))
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.json()["error"]["code"] == "upstream_unauthorized"
+
+
+@respx.mock
+def test_401_mentioning_captcha_still_routes_to_recaptcha(client):
+    stream_route(respx).mock(
+        return_value=httpx.Response(401, content=b'{"error":"recaptcha verification failed"}')
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.json()["error"]["code"] == "recaptcha_rejected"
+
+
+@respx.mock
+def test_authorization_header_sent_to_upstream():
+    """Cookie'den ayıklanan token upstream isteğine Bearer olarak eklenmeli."""
+    import base64
+    import json as _json
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    def seg(d):
+        return base64.urlsafe_b64encode(_json.dumps(d).encode()).decode().rstrip("=")
+
+    token = f"{seg({'alg': 'HS256'})}.{seg({'sub': 'u'})}.sig"
+
+    route = stream_route(respx).mock(
+        return_value=httpx.Response(200, content=ai_stream("ok"))
+    )
+    app = create_app(make_settings(upstream_cookie=f"access_token={token}; theme=dark"))
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        assert local.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        ).status_code == 200
+
+    sent = route.calls[0].request.headers
+    assert sent["authorization"] == f"Bearer {token}"
+    assert sent["cookie"] == f"access_token={token}; theme=dark"

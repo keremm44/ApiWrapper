@@ -71,6 +71,22 @@ def main() -> int:
     check("model listesi dolu", bool(ids), str(ids))
     model = args.model or (ids[0] if ids else "")
 
+    # 1b) upstream kimlik teşhisi
+    print("\n[1b] GET /admin/auth (upstream kimlik teşhisi)")
+    try:
+        diag = request("/admin/auth")
+        token = diag.get("token", {})
+        if diag.get("authorization_header_will_be_sent"):
+            check("Authorization başlığı gönderilecek", True,
+                  f"kaynak={diag.get('source')}, jwt={token.get('is_jwt')}, "
+                  f"kalan={token.get('expires_in_seconds')}s")
+            check("token süresi dolmamış", not token.get("expired"))
+        else:
+            print(f"{DIM}    Authorization gönderilmiyor "
+                  f"(cookie/token yapılandırılmamış olabilir){RESET}")
+    except urllib.error.HTTPError as exc:
+        print(f"{DIM}    /admin/auth kullanılamadı: HTTP {exc.code}{RESET}")
+
     # 2) non-stream
     print("\n[2] POST /chat/completions (stream=false)")
     body = {"model": model, "messages": [{"role": "user", "content": args.prompt}]}

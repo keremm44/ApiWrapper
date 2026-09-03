@@ -16,6 +16,7 @@ from app.upstream.breaker import CircuitBreaker
 from app.upstream.exceptions import (
     CircuitOpen,
     RecaptchaRejected,
+    UpstreamAuthRejected,
     UpstreamHTTPError,
     UpstreamNetworkError,
     UpstreamTimeout,
@@ -27,8 +28,24 @@ logger = get_logger(__name__)
 
 #: Yeniden denenebilir HTTP durum kodları.
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
-#: reCAPTCHA yenilemesi gerektiren durum kodları.
+#: Kimlik/captcha reddi olabilecek durum kodları.
 CAPTCHA_STATUS = frozenset({401, 403})
+#: Gövdede captcha izi yokken oturum sorununa işaret eden kodlar.
+AUTH_STATUS = frozenset({401})
+#: Gövdede oturum/token sorununa işaret eden anahtar kelimeler.
+AUTH_MARKERS = (
+    "unauthorized",
+    "unauthenticated",
+    "invalid token",
+    "invalid_token",
+    "expired",
+    "jwt",
+    "access token",
+    "access_token",
+    "not signed in",
+    "login",
+    "session",
+)
 
 
 class UpstreamClient:
@@ -103,6 +120,7 @@ class UpstreamClient:
 
     @staticmethod
     def _is_captcha_body(status: int, body: str) -> bool:
+        """403/401 yanıtının reCAPTCHA reddi olup olmadığını ayırt eder."""
         if status not in CAPTCHA_STATUS:
             return False
         lowered = body.lower()
@@ -110,6 +128,21 @@ class UpstreamClient:
             marker in lowered
             for marker in ("recaptcha", "captcha", "verification", "bot", "forbidden")
         )
+
+    @staticmethod
+    def _is_auth_body(status: int, body: str) -> bool:
+        """401 yanıtının oturum/`access_token` reddi olup olmadığını ayırt eder.
+
+        Gövde boş bir 401 de kimlik sorunu sayılır: hedef servis `Authorization`
+        başlığını zorunlu kıldığı için en olası neden token'ın eksik/süresi dolmuş
+        olmasıdır.
+        """
+        if status not in AUTH_STATUS:
+            return False
+        lowered = body.lower()
+        if not lowered.strip():
+            return True
+        return any(marker in lowered for marker in AUTH_MARKERS)
 
     # ------------------------------------------------------------- request
     @asynccontextmanager
@@ -162,6 +195,16 @@ class UpstreamClient:
                     metrics.inc(
                         "apiwrapper_upstream_errors_total", labels={"status": str(status)}
                     )
+
+                    if self._is_auth_body(status, error_body) and not self._is_captcha_body(
+                        status, error_body
+                    ):
+                        await self.breaker.record_failure()
+                        raise UpstreamAuthRejected(
+                            "Upstream rejected the session credentials.",
+                            status_code=status,
+                            body=error_body,
+                        )
 
                     if self._is_captcha_body(status, error_body):
                         await self.breaker.record_failure()

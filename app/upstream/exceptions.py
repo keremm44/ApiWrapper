@@ -33,5 +33,9 @@ class RecaptchaRejected(UpstreamException):
     """Upstream reCAPTCHA token'ını reddetti (yenilenip tekrar denenmeli)."""
 
 
+class UpstreamAuthRejected(UpstreamException):
+    """Upstream oturumu/`access_token`'ı reddetti (401). Yenilemek kullanıcıya düşer."""
+
+
 class CircuitOpen(UpstreamException):
     """Devre kesici açık; istek gönderilmedi."""

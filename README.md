@@ -19,6 +19,7 @@ Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
 |---|---|
 | Uç noktalar | `POST /v1/chat/completions` (stream + non-stream), `POST /v1/completions`, `GET /v1/models`, `GET /v1/models/{id}`, `GET /health`, `GET /metrics`, `/v1/admin/*` |
 | Akış | Vercel AI SDK data-stream (`0:`, `f:`, `e:`, `d:`, `3:` …) → OpenAI SSE; UTF-8 sınır güvenli; `[DONE]` garantili |
+| Upstream auth | Cookie'den `access_token` ayıklama (JSON/base64/parçalı) → `Authorization: Bearer`; `/v1/admin/auth` teşhisi |
 | Güvenlik | Sabit zamanlı API key doğrulama, log maskeleme, gövde/mesaj/prompt limitleri, SSRF'e kapalı sabit hedef |
 | Dayanıklılık | Retry + full jitter, `Retry-After` desteği, devre kesici, eşzamanlılık tavanı, idle timeout, istemci kopması iptali |
 | reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
@@ -51,6 +52,67 @@ make run                  # http://localhost:8000/docs
 
 > Hedef domain ve model kimlikleri **kodda gömülü değildir**; yalnızca `.env` ve
 > `config/models.yaml` üzerinden okunur.
+
+---
+
+## Upstream Kimlik Doğrulama (`Authorization: Bearer`)
+
+Hedef servis yalnızca `Cookie` göndermeyi yeterli bulmaz; `Authorization: Bearer <access_token>`
+başlığını da zorunlu kılar (aksi halde **401**). ApiWrapper token'ı `UPSTREAM_COOKIE`
+içinden **otomatik ayıklar** ve her upstream isteğine ekler.
+
+```bash
+# Tarayıcıdan kopyalanan ham Cookie başlığı yeterlidir:
+UPSTREAM_COOKIE=theme=dark; sb-abc-auth-token=base64-eyJhY2Nlc3NfdG9rZW4iOi...; other=1
+```
+
+Desteklenen çerez biçimleri (`app/upstream/auth.py`):
+
+| Biçim | Örnek |
+|---|---|
+| Düz değer | `access_token=eyJhbGciOi...` |
+| URL-encoded | `access_token=eyJ...%3D%3D` |
+| JSON nesnesi | `sb-auth-token={"access_token":"eyJ...","refresh_token":"..."}` |
+| JSON dizisi | `sb-auth-token=["eyJ...","refresh",null,null]` |
+| base64-JSON | `sb-auth-token=base64-eyJhY2Nlc3NfdG9rZW4iOi...` |
+| Parçalı çerez | `sb-auth-token.0=base64-eyJ...` + `sb-auth-token.1=...` |
+
+### İlgili ayarlar
+
+| Değişken | Varsayılan | Açıklama |
+|---|---|---|
+| `UPSTREAM_AUTH_FROM_COOKIE` | `true` | Cookie'den otomatik ayıklamayı aç/kapa |
+| `UPSTREAM_ACCESS_TOKEN` | — | Token'ı doğrudan ver (en yüksek öncelik) |
+| `UPSTREAM_TOKEN_COOKIE_NAMES` | — | Token'ı taşıyan çerez adları (virgülle); boşsa sezgisel arama |
+| `UPSTREAM_AUTH_SCHEME` | `Bearer` | Boş bırakılırsa token ham gönderilir |
+| `UPSTREAM_WARN_ON_EXPIRED_TOKEN` | `true` | JWT `exp` dolmuşsa logda uyar |
+
+> `UPSTREAM_EXTRA_HEADERS` en son uygulanır; `authorization=...` yazarak
+> otomatik üretilen başlığı bilinçli olarak ezebilirsiniz.
+
+### Teşhis
+
+Token'ın doğru ayıklanıp ayıklanmadığını **token'ı ifşa etmeden** kontrol edin:
+
+```bash
+curl -s -H "Authorization: Bearer sk-local-dev-key" \
+  http://localhost:8000/v1/admin/auth | jq
+```
+
+```json
+{
+  "authorization_header_will_be_sent": true,
+  "source": "cookie",
+  "cookie_names_present": ["other", "sb-abc-auth-token", "theme"],
+  "token": {"found": true, "masked": "eyJ***yz", "is_jwt": true,
+            "expires_in_seconds": 3567, "expired": false}
+}
+```
+
+Upstream yine de 401 dönerse yanıt artık genel bir hata değil, eyleme dönük olur:
+`upstream_unauthorized` + "Refresh UPSTREAM_COOKIE...". Süresi dolmuş bir JWT
+gönderilmeden önce log uyarısı düşer (`access_token_expired`, kaç saniye önce dolduğu ile).
+
 
 ---
 
