@@ -67,11 +67,22 @@ TOKEN_JSON_KEYS: tuple[str, ...] = (
     "value",
 )
 
+#: Kırpılmış JSON gövdesinde access_token alanını yakalar.
+_TRUNCATED_TOKEN_RE = re.compile(
+    r'"(?:access_token|accessToken)"\s*:\s*"(?P<token>[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*)"'
+)
+
 #: JWT biçimi: üç base64url parçası, noktayla ayrılmış.
 _JWT_RE = re.compile(r"^[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]*$")
 
 #: Parçalı çerez son eki: ``ad.0``, ``ad.1`` ...
 _CHUNK_SUFFIX_RE = re.compile(r"^(?P<base>.+)\.(?P<index>\d+)$")
+
+#: Ham (JWT olmayan) bir değerin token sayılabileceği azami uzunluk.
+_MAX_RAW_TOKEN_LENGTH = 1024
+
+#: Base64 alfabesi (dolgu ve URL-safe karakterler dâhil).
+_B64_ALPHABET_RE = re.compile(r"[A-Za-z0-9+/=_-]+")
 
 #: Token olarak kabul edilebilecek asgari uzunluk (rastgele kısa değerleri elemek için).
 _MIN_TOKEN_LENGTH = 16
@@ -226,6 +237,11 @@ def _candidate_strings(value: str) -> list[str]:
         decoded = _try_b64_decode(body)
         if decoded is not None:
             push(decoded)
+        # Çözülen metin geçerli JSON olmayabilir (çerez kırpılmışsa gövde yarıda
+        # kesilir), bu yüzden kurtarma her hâlükârda denenir.
+        salvaged = _salvage_truncated_b64(body)
+        if salvaged is not None:
+            push(salvaged)
     return seen
 
 
@@ -247,6 +263,37 @@ def _try_b64_decode(value: str) -> str | None:
     stripped = text.strip()
     if stripped.startswith(("{", "[")) or _JWT_RE.match(stripped):
         return stripped
+    return None
+
+
+def _salvage_truncated_b64(value: str) -> str | None:
+    """Kırpılmış base64 gövdesinden token'ı kurtarmayı dener.
+
+    Tarayıcılar 4096 baytı aşan oturum çerezlerini ``ad.0``/``ad.1`` parçalarına
+    böler. Kullanıcı yalnızca ilk parçayı kopyaladığında değer geçerli base64
+    değildir ve tamamı çözülemez. Base64 4 karakterlik bloklar hâlinde
+    çözülebildiği için baştaki en uzun tam bloğu açar ve JSON tamamlanmamış olsa
+    bile ``access_token`` alanını düz metin olarak arar.
+    """
+    candidate = value.strip()
+    if len(candidate) < 64:
+        return None
+    usable = candidate[: len(candidate) - (len(candidate) % 4)]
+    while usable:
+        try:
+            text = base64.b64decode(usable, altchars=b"-_", validate=False).decode(
+                "utf-8", errors="ignore"
+            )
+        except (ValueError, binascii.Error):
+            return None
+        if text.lstrip().startswith("{"):
+            match = _TRUNCATED_TOKEN_RE.search(text)
+            if match:
+                token = match.group("token")
+                return token if looks_like_jwt(token) else None
+            return None
+        # Baş kısım JSON değilse hizalama kaymış olabilir; bir blok geri çekil.
+        usable = usable[:-4]
     return None
 
 
@@ -310,10 +357,28 @@ def _token_from_value(value: str) -> str | None:
             if found:
                 return found
     # JSON/JWT değilse, ham değer yeterince uzun ve boşluksuzsa kabul et.
+    # Ancak çözülemeyen base64 oturum gövdesini token diye göndermek, upstream'e
+    # kilometrelerce anlamsız bir Authorization başlığı yollamak demektir.
     for candidate in _candidate_strings(value):
+        if _looks_like_session_blob(candidate):
+            continue
         if _acceptable(candidate):
             return candidate.strip()
     return None
+
+
+def _looks_like_session_blob(value: str) -> bool:
+    """Değerin, token değil kodlanmış oturum gövdesi olduğunu tahmin eder."""
+    candidate = value.strip().strip('"')
+    if candidate.startswith(("base64-", "base64_", "b64-")):
+        return True
+    # JWT olmayan, çok uzun ve base64 alfabesinden oluşan değerler oturum
+    # gövdesidir; gerçek erişim token'ları bu boyuta ulaşmaz.
+    return (
+        len(candidate) > _MAX_RAW_TOKEN_LENGTH
+        and not looks_like_jwt(candidate)
+        and _B64_ALPHABET_RE.fullmatch(candidate) is not None
+    )
 
 
 def extract_access_token(

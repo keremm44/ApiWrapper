@@ -378,3 +378,42 @@ def test_auth_cookie_found_regardless_of_vendor_prefix(cookie_name: str):
 def test_no_token_when_only_tracking_cookies_present():
     """Yalnızca analitik/Cloudflare çerezleri varsa token uydurulmamalı."""
     assert extract_access_token(_NOISE) is None
+
+
+# ------------------------- kırpılmış (4096 baytta bölünmüş) oturum çerezleri
+def _large_session_cookie() -> str:
+    """4096 baytı aşan, gerçekçi bir Supabase oturum gövdesi üretir."""
+    session = {
+        "access_token": TOKEN,
+        "token_type": "bearer",
+        "refresh_token": "x" * 60,
+        "user": {"id": "u" * 36, "user_metadata": {"bio": "b" * 3400}},
+    }
+    return "base64-" + base64.b64encode(json.dumps(session).encode()).decode()
+
+
+@pytest.mark.parametrize("cut", [3000, 4096, 4515])
+def test_truncated_session_cookie_is_salvaged(cut: int):
+    """Tarayıcı çerezi böldüğünde kullanıcı sıklıkla yalnızca ilk parçayı kopyalar.
+
+    Değer geçerli base64 olmadığı için tamamı çözülemez; yine de baştaki tam
+    bloklardan access_token kurtarılabilmeli.
+    """
+    blob = _large_session_cookie()
+    assert len(blob) > cut
+    header = f"cf_clearance=zz; -auth-prod-v1.0={blob[:cut]}"
+    assert extract_access_token(header) == TOKEN
+
+
+def test_chunked_session_cookie_parts_are_joined():
+    blob = _large_session_cookie()
+    header = f"-auth-prod-v1.0={blob[:4096]}; -auth-prod-v1.1={blob[4096:]}"
+    assert extract_access_token(header) == TOKEN
+
+
+def test_undecodable_session_blob_is_not_sent_as_token():
+    """Çözülemeyen base64 gövdesi Authorization başlığına konmamalı.
+
+    Aksi hâlde upstream'e kilobaytlarca anlamsız bir Bearer değeri gider.
+    """
+    assert extract_access_token("-auth-prod-v1.0=base64-" + "Zm9vYmFy" * 600) is None
