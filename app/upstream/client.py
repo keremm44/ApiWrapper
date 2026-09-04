@@ -27,9 +27,11 @@ from app.utils.backoff import full_jitter_delay, parse_retry_after
 logger = get_logger(__name__)
 
 #: Yeniden denenebilir HTTP durum kodları.
-RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
+# Rate limit yanıtını anında tekrar göndermek limiti ağırlaştırır; Retry-After
+# olsa bile tek kullanıcı isteğini otomatik olarak çoğaltmamak gerekir.
+RETRYABLE_STATUS = frozenset({408, 425, 500, 502, 503, 504, 522, 524})
 #: Kimlik/captcha reddi olabilecek durum kodları.
-CAPTCHA_STATUS = frozenset({401, 403})
+CAPTCHA_STATUS = frozenset({400, 401, 403})
 #: Gövdede captcha izi yokken oturum sorununa işaret eden kodlar.
 AUTH_STATUS = frozenset({401})
 #: Gövdede oturum/token sorununa işaret eden anahtar kelimeler.
@@ -182,6 +184,13 @@ class UpstreamClient:
                     last_error = UpstreamNetworkError(f"Upstream network error: {exc}")
                 else:
                     status = response.status_code
+                    logger.info(
+                        "upstream_response_headers",
+                        status=status,
+                        content_type=response.headers.get("content-type", ""),
+                        transfer_encoding=response.headers.get("transfer-encoding", ""),
+                        retry_after=response.headers.get("retry-after", ""),
+                    )
                     if status < 400:
                         await self.breaker.record_success()
                         try:

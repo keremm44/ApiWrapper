@@ -18,6 +18,7 @@ from scripts.compare_curl import parse_curl
 from scripts.curl_to_env import (
     build_settings,
     extract_captcha,
+    extract_model_id,
     merge_env,
     update_models_yaml,
 )
@@ -77,6 +78,11 @@ def test_extracts_every_setting_from_curl(sample):
     assert env["UPSTREAM_ACCEPT_LANGUAGE"] == "tr-TR,tr;q=0.9"
     assert model_id == "019f19f2-41f1-7c6d-9891-48d02fd9952c"
     assert warnings == []
+
+
+@pytest.mark.parametrize("field", ["modelAId", "modelId", "model_id", "model"])
+def test_detects_model_id_aliases(field: str):
+    assert extract_model_id({field: "real-model"}) == "real-model"
 
 
 def test_extracted_cookie_is_single_line(sample):
@@ -143,7 +149,7 @@ def test_merge_env_creates_file_when_absent(tmp_path):
     assert "TARGET_DOMAIN=example.com" in result
 
 
-def test_update_models_yaml_replaces_first_upstream_id(tmp_path):
+def test_update_models_yaml_adds_unknown_model_without_overwriting_existing(tmp_path):
     path = tmp_path / "models.yaml"
     path.write_text(
         "models:\n  - id: a\n    upstream_id: PLACEHOLDER\n  - id: b\n    upstream_id: OTHER\n",
@@ -151,8 +157,34 @@ def test_update_models_yaml_replaces_first_upstream_id(tmp_path):
     )
     assert update_models_yaml(path, "real-id-1") is True
     text = path.read_text(encoding="utf-8")
+    assert "id: real-id-1" in text
     assert "upstream_id: real-id-1" in text
+    assert "upstream_id: PLACEHOLDER" in text
     assert "upstream_id: OTHER" in text
+
+
+def test_update_models_yaml_can_bind_named_model(tmp_path):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "models:\n  - id: a\n    upstream_id: PLACEHOLDER\n  - id: b\n    upstream_id: OTHER\n",
+        encoding="utf-8",
+    )
+    assert update_models_yaml(path, "real-id-1", "b") is True
+    text = path.read_text(encoding="utf-8")
+    assert "id: b\n    upstream_id: real-id-1" in text
+    assert "upstream_id: OTHER" not in text
+
+
+def test_update_models_yaml_named_model_wins_when_id_exists_elsewhere(tmp_path):
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "models:\n  - id: source\n    upstream_id: real-id-1\n"
+        "  - id: selected\n    upstream_id: old-id\n",
+        encoding="utf-8",
+    )
+    assert update_models_yaml(path, "real-id-1", "selected") is True
+    text = path.read_text(encoding="utf-8")
+    assert "id: selected\n    upstream_id: real-id-1" in text
 
 
 def test_update_models_yaml_missing_file_is_reported(tmp_path):
@@ -196,8 +228,19 @@ def test_unexpected_path_is_warned_but_not_critical():
     """Doğru alan adı ama yanlış uç: uyar, ama yazmayı engelleme."""
     curl = "curl 'https://example-llm.ai/api/session' -H 'cookie: a-auth=b' --data-raw '{}'"
     _, warnings, _ = build_settings(parse_curl(curl))
-    assert any("post-to-evaluation" in w for w in warnings)
+    assert any("bilinen sohbet izlerinden" in w for w in warnings)
     assert not any(w.startswith("KRİTİK") for w in warnings)
+
+
+def test_alternative_chat_path_is_accepted():
+    curl = (
+        "curl 'https://example-llm.ai/api/chat/stream/c1' "
+        "-H 'cookie: a-auth=b' "
+        "--data-raw '{\"id\":\"c1\",\"modelId\":\"real-model\"}'"
+    )
+    _, warnings, model_id = build_settings(parse_curl(curl))
+    assert model_id == "real-model"
+    assert not any("bilinen sohbet izlerinden" in w for w in warnings)
 
 
 def test_correct_endpoint_produces_no_path_or_host_warning(sample):
@@ -257,3 +300,20 @@ def test_warns_when_chat_id_missing_from_path():
     )
     assert "UPSTREAM_STREAM_PATH" not in env
     assert any("UPSTREAM_STREAM_PATH" in w for w in warnings)
+
+
+def test_create_evaluation_path_can_take_chat_id_from_body():
+    body = {
+        "id": "chat-from-body",
+        "modelAId": "real-model",
+        "modality": "chat",
+        "recaptchaV3Token": "tok" + "x" * 40,
+    }
+    curl = (
+        "curl 'https://target.ai/nextjs-api/stream/create-evaluation' "
+        "-H 'cookie: a-auth-token=abc' "
+        f"--data-raw '{json.dumps(body)}'"
+    )
+    env, warnings, _ = build_settings(parse_curl(curl))
+    assert env["UPSTREAM_STREAM_PATH"] == "/nextjs-api/stream/create-evaluation"
+    assert not any("UPSTREAM_STREAM_PATH" in warning for warning in warnings)

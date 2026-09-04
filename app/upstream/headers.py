@@ -7,6 +7,7 @@ cURL analizindeki başlıklar birebir korunur; Chrome'un gönderdiği
 from __future__ import annotations
 
 import re
+import secrets
 
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -107,6 +108,8 @@ def _apply_auth(headers: dict[str, str], settings: Settings) -> None:
 def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
     """Stream uç noktası için tam başlık kümesi."""
     ua = settings.upstream_user_agent
+    trace_id = secrets.token_hex(16)
+    span_id = secrets.token_hex(8)
     headers: dict[str, str] = {
         "accept": "*/*",
         "accept-language": settings.upstream_accept_language,
@@ -121,6 +124,8 @@ def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
         "priority": "u=1, i",
+        "traceparent": f"00-{trace_id}-{span_id}-01",
+        "tracestate": "dd=s:1;o:rum",
     }
     if settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie

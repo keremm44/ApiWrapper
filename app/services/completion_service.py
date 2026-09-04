@@ -356,6 +356,13 @@ class CompletionService:
                         _dump(make_content_chunk(completion_id, entry.id, created, tail))
                     )
                 finished_cleanly = True
+                if not completion_text:
+                    logger.warning(
+                        "upstream_stream_empty_text",
+                        model=entry.id,
+                        upstream_model=entry.upstream_id,
+                        finish_reason=finish_reason,
+                    )
 
             except Exception as exc:
                 api_error = self._translate(exc)

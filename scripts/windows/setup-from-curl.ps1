@@ -21,6 +21,9 @@
 .PARAMETER ShowSecrets
     Çerez ve token değerlerini maskelemeden yazdırır.
 
+.PARAMETER ModelName
+    cURL'deki upstream modelini bu yerel model adıyla eşleştirir.
+
 .EXAMPLE
     .\scripts\windows\setup-from-curl.ps1
     Yapıştırma ekranı açar; cURL'ü yapıştırıp boş satırda Enter'a basın.
@@ -32,6 +35,7 @@
 param(
     [switch]$FromClipboard,
     [string]$Path,
+    [string]$ModelName,
     [switch]$DryRun,
     [switch]$ShowSecrets
 )
@@ -96,6 +100,11 @@ if ($curlText -notmatch 'curl') {
     Write-Host "UYARI: Girdide 'curl' gecmiyor. Yanlis metin yapistirilmis olabilir." -ForegroundColor Yellow
 }
 
+Write-Host ''
+Write-Host 'İpucu: DevTools > Network filtre kutusuna şunlardan birini yazın:' -ForegroundColor Cyan
+Write-Host '  stream   chat   completion   generate   message   evaluation' -ForegroundColor White
+Write-Host '  Ardından Status 200 ve Method POST olan isteği seçin.' -ForegroundColor Gray
+
 # Gecici dosyaya UTF-8 (BOM'suz) yaz: Python tarafi bozulmadan okusun.
 $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) "curl_$([guid]::NewGuid().ToString('N')).txt"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -104,6 +113,7 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 try {
     $python = Find-Python
     $arguments = @('scripts/curl_to_env.py', $tempFile)
+    if ($ModelName)   { $arguments += @('--model-name', $ModelName) }
     if (-not $DryRun)   { $arguments += '--write' }
     if ($ShowSecrets)   { $arguments += '--show-secrets' }
 
@@ -123,8 +133,8 @@ finally {
 if ($code -eq 3) {
     Write-Host ''
     Write-Host 'YANLIS ISTEK: kopyalanan cURL bir telemetri/analitik cagrisina ait.' -ForegroundColor Red
-    Write-Host 'Network sekmesinde arama kutusuna su metni yazip filtreleyin:' -ForegroundColor Yellow
-    Write-Host '    post-to-evaluation' -ForegroundColor White
+    Write-Host 'Network sekmesinde POST ve model kimligi iceren sohbet istegini secin.' -ForegroundColor Yellow
+    Write-Host 'Arama: stream, chat, completion, generate, message veya evaluation' -ForegroundColor White
     Write-Host 'Cikan istege sag tik > Copy > Copy as cURL (bash) yapip tekrar deneyin.' -ForegroundColor Yellow
     exit $code
 }

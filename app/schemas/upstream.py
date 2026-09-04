@@ -32,6 +32,7 @@ class UpstreamPayload(BaseModel):
     model_a_message_id: str = Field(alias="modelAMessageId")
     user_message: UserMessage = Field(alias="userMessage")
     modality: str = "chat"
+    mode: str = "direct-battle"
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
 
     def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:

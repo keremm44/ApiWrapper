@@ -127,11 +127,13 @@ def test_built_payload_matches_target_wire_format():
         "modelAMessageId",
         "userMessage",
         "modality",
+        "mode",
         "recaptchaV3Token",
     }
     assert wire["id"] == "chat-1"
     assert wire["modelAId"] == "upstream-model-a"
     assert wire["modality"] == "chat"
+    assert wire["mode"] == "direct-battle"
     assert wire["recaptchaV3Token"] == "tok"
     assert wire["userMessage"]["content"] == "Merhaba"
     assert wire["userMessage"]["experimental_attachments"] == []

@@ -93,6 +93,10 @@ def _extract_text(payload: Any) -> str:
             value = payload.get(key)
             if isinstance(value, str):
                 return value
+            if isinstance(value, dict):
+                nested = _extract_text(value)
+                if nested:
+                    return nested
         return ""
     if isinstance(payload, list):
         return "".join(_extract_text(item) for item in payload)
@@ -116,6 +120,12 @@ def parse_line(line: str) -> StreamEvent | None:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
+            # Bazı proxy/SSE katmanları Vercel data-stream satırını tekrar
+            # `data:` içine sarar: `data: 0:"metin"`.
+            if ":" in line and len(line.split(":", 1)[0].strip()) <= 2:
+                nested = parse_line(line)
+                if nested is not None:
+                    return nested
             return StreamEvent(type=EventType.TEXT, text=line, raw_code="sse")
         return _from_sse_payload(payload)
 
@@ -183,7 +193,11 @@ def _from_sse_payload(payload: Any) -> StreamEvent:
                     finish_reason=reason,
                     usage=normalize_usage(payload.get("usage")),
                 )
-            return StreamEvent(type=EventType.TEXT, text=text or "", raw_code="sse")
+            if text:
+                return StreamEvent(type=EventType.TEXT, text=text, raw_code="sse")
+        text = _extract_text(payload)
+        if text:
+            return StreamEvent(type=EventType.TEXT, text=text, raw_code="sse", data=payload)
     return StreamEvent(type=EventType.TEXT, text=_extract_text(payload), raw_code="sse")
 
 
@@ -224,12 +238,31 @@ class StreamDecoder:
 async def parse_stream(chunks: AsyncIterator[bytes]) -> AsyncIterator[StreamEvent]:
     """Bayt akışını `StreamEvent` akışına dönüştürür."""
     decoder = StreamDecoder()
+    event_count = 0
+    text_count = 0
+    unknown_count = 0
     async for chunk in chunks:
         for line in decoder.feed(chunk):
             event = parse_line(line)
             if event is not None:
+                event_count += 1
+                if event.type in (EventType.TEXT, EventType.REASONING) and event.text:
+                    text_count += 1
+                if event.type is EventType.UNKNOWN:
+                    unknown_count += 1
                 yield event
     for line in decoder.flush():
         event = parse_line(line)
         if event is not None:
+            event_count += 1
+            if event.type in (EventType.TEXT, EventType.REASONING) and event.text:
+                text_count += 1
+            if event.type is EventType.UNKNOWN:
+                unknown_count += 1
             yield event
+    logger.info(
+        "upstream_stream_summary",
+        events=event_count,
+        text_events=text_count,
+        unknown_events=unknown_count,
+    )

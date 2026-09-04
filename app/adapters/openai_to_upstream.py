@@ -132,6 +132,7 @@ def build_upstream_request(
             metadata=metadata,
         ),
         modality="chat",
+        mode="direct-battle",
         recaptchaV3Token=recaptcha_token,
     )
 

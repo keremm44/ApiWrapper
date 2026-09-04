@@ -65,6 +65,22 @@ def test_sse_tolerance_openai_shape():
     assert event.text == "hi"
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        'data: {"type":"text-delta","textDelta":"hi"}',
+        'data: {"type":"text-delta","delta":"hi"}',
+        'data: {"content":"hi"}',
+        'data: {"delta":{"text":"hi"}}',
+    ],
+)
+def test_sse_tolerance_generic_text_shapes(line: str):
+    event = parse_line(line)
+    assert event is not None
+    assert event.type is EventType.TEXT
+    assert event.text == "hi"
+
+
 def test_sse_done_is_finish():
     event = parse_line("data: [DONE]")
     assert event.type is EventType.FINISH

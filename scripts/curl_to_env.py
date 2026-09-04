@@ -84,8 +84,18 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
-#: Hedef akış ucunu tanıyan iz: cURL doğru istekten alınmışsa yolda bulunur.
-_EXPECTED_PATH_HINT = "post-to-evaluation"
+#: Farklı upstream sürümlerindeki model/sohbet endpoint izleri.
+_EXPECTED_PATH_HINTS: tuple[str, ...] = (
+    "post-to-evaluation",
+    "stream",
+    "completion",
+    "chat",
+    "generate",
+    "message",
+    "inference",
+    "evaluation",
+    "create-evaluation",
+)
 
 
 def _mask(value: str, keep: int = 6) -> str:
@@ -106,6 +116,15 @@ def extract_captcha(body: dict[str, Any]) -> tuple[str | None, str | None]:
         if "captcha" in key.lower() and isinstance(value, str) and value.strip():
             return key, value.strip()
     return None, None
+
+
+def extract_model_id(body: dict[str, Any]) -> str | None:
+    """Farklı cURL sürümlerindeki model kimliği alanlarını bulur."""
+    for field in ("modelAId", "modelId", "model_id", "model"):
+        value = body.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], str | None]:
@@ -130,13 +149,14 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
     if any(marker in lowered_host for marker in TELEMETRY_HOSTS):
         warnings.append(
             f"KRİTİK: '{host}' bir telemetri/analitik adresi; sohbet ucu değil. "
-            "Network sekmesinde 'post-to-evaluation' isteğine sağ tıklayıp "
-            "cURL'ü yeniden kopyalayın."
+            "Network sekmesinde POST olan, gövdesinde model kimliği bulunan sohbet "
+            "isteğine sağ tıklayıp cURL'ü yeniden kopyalayın."
         )
-    elif split and _EXPECTED_PATH_HINT not in split.path.lower():
+    elif split and not any(hint in split.path.lower() for hint in _EXPECTED_PATH_HINTS):
         warnings.append(
-            f"URL yolu beklenen '{_EXPECTED_PATH_HINT}' ucunu içermiyor: "
-            f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir."
+            f"URL yolu bilinen sohbet izlerinden hiçbirini içermiyor: {split.path or '/'}. "
+            "İstek yine de model gövdesi içeriyorsa devam edilebilir; aksi halde yanlış "
+            "Network isteği seçilmiş olabilir."
         )
 
     # --- akış yolu (sabit varsayım yerine cURL'deki gerçek yol)
@@ -190,16 +210,24 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
         )
 
     # --- model kimliği
-    model_id = body.get("modelAId")
-    if not isinstance(model_id, str) or not model_id.strip():
-        model_id = None
+    model_id = extract_model_id(body)
+    if not model_id:
         warnings.append(
-            "Gövdede 'modelAId' yok; config/models.yaml içindeki upstream_id "
-            "değerini elle güncellemeniz gerekir."
+            "Gövdede model kimliği bulunamadı (modelAId/modelId/model_id/model); "
+            "config/models.yaml içindeki upstream_id değeri otomatik güncellenemez."
         )
 
     if not body and parsed["body"]:
         warnings.append("Gövde JSON olarak ayrıştırılamadı; cURL eksik kopyalanmış olabilir.")
+
+    if not body:
+        warnings.append(
+            "KRİTİK: cURL gövdesi yok; bu bir model sohbet isteği değil veya cURL eksik kopyalanmış."
+        )
+    elif not model_id:
+        warnings.append(
+            "KRİTİK: Gövdede 'modelAId' yok; bu cURL model akış isteği olarak doğrulanamadı."
+        )
 
     return env, warnings, model_id
 
@@ -221,6 +249,13 @@ def _stream_path_template(path: str, body: dict[str, Any]) -> str | None:
     match = _UUID_RE.search(path)
     if match:
         return path[: match.start()] + "{chat_id}" + path[match.end() :]
+
+    # Bazı sürümlerde chat_id URL'ye değil JSON gövdesine gider; bu durumda
+    # endpoint yolunu olduğu gibi korumak gerekir.
+    if isinstance(chat_id, str) and chat_id and any(
+        hint in path.lower() for hint in _EXPECTED_PATH_HINTS
+    ):
+        return path
     return None
 
 
@@ -262,22 +297,49 @@ def merge_env(path: Path, updates: dict[str, str]) -> str:
     return "\n".join(result) + "\n"
 
 
-def update_models_yaml(path: Path, upstream_id: str) -> bool:
-    """`models.yaml` içindeki ilk `upstream_id` değerini günceller."""
+def update_models_yaml(path: Path, upstream_id: str, model_name: str | None = None) -> bool:
+    """Model eşleşmesini güvenli biçimde ekler veya günceller.
+
+    Birden fazla model varken ilk kaydı sessizce değiştirmek yanlış model
+    eşleşmesine yol açar. Bu durumda yeni model, varsayılan yerel adı olarak
+    upstream kimliğiyle eklenir; ``model_name`` verilirse o ad kullanılır.
+    """
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
-    new_text, count = re.subn(
-        r"(^\s*upstream_id:\s*).*$",
-        lambda m: f"{m.group(1)}{upstream_id}",
-        text,
-        count=1,
-        flags=re.MULTILINE,
+    if model_name:
+        id_match = re.search(
+            rf"(^\s*- id:\s*){re.escape(model_name)}\s*$", text, re.MULTILINE
+        )
+        if id_match:
+            start = id_match.end()
+            next_model = re.search(r"^\s*- id:\s*", text[start:], re.MULTILINE)
+            end = start + next_model.start() if next_model else len(text)
+            block = text[start:end]
+            new_block, count = re.subn(
+                r"(^\s*upstream_id:\s*).*$",
+                lambda m: f"{m.group(1)}{upstream_id}",
+                block,
+                count=1,
+                flags=re.MULTILINE,
+            )
+            if count:
+                path.write_text(text[:start] + new_block + text[end:], encoding="utf-8")
+                return True
+
+    if re.search(rf"^\s*upstream_id:\s*{re.escape(upstream_id)}\s*$", text, re.MULTILINE):
+        return False
+
+    name = model_name or upstream_id
+    suffix = "" if text.endswith("\n") else "\n"
+    addition = (
+        f"{suffix}\n  - id: {name}\n"
+        f"    upstream_id: {upstream_id}\n"
+        "    owned_by: upstream\n"
+        "    description: cURL ile eklenen model\n"
     )
-    if count and new_text != text:
-        path.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+    path.write_text(text + addition, encoding="utf-8")
+    return True
 
 
 def main() -> int:
@@ -291,6 +353,13 @@ def main() -> int:
     parser.add_argument("--env-file", default=".env", help="Hedef .env yolu")
     parser.add_argument(
         "--models-file", default="config/models.yaml", help="Hedef models.yaml yolu"
+    )
+    parser.add_argument(
+        "--model-name",
+        help=(
+            "cURL'deki modeli bağlamak için yerel model adı; verilmezse yeni model "
+            "upstream_id adıyla eklenir"
+        ),
     )
     parser.add_argument(
         "--show-secrets", action="store_true", help="Değerleri maskelemeden yazdır"
@@ -326,6 +395,7 @@ def main() -> int:
         print(f"  {key}={shown}")
     if model_id:
         print(f"  (models.yaml) upstream_id={model_id}")
+        print(f"  (models.yaml) yerel ad={args.model_name or model_id}")
 
     if warnings:
         print("\n=== Uyarılar ===")
@@ -351,13 +421,13 @@ def main() -> int:
 
     if model_id:
         models_path = Path(args.models_file)
-        if update_models_yaml(models_path, model_id):
-            print(f"{models_path} güncellendi (upstream_id={model_id}).")
-        else:
+        if update_models_yaml(models_path, model_id, args.model_name):
             print(
-                f"UYARI: {models_path} güncellenemedi; upstream_id={model_id} "
-                "değerini elle yazın."
+                f"{models_path} güncellendi "
+                f"({args.model_name or model_id} -> {model_id})."
             )
+        else:
+            print(f"{models_path} zaten bu upstream_id eşleşmesini içeriyor: {model_id}.")
     return 0
 
 
