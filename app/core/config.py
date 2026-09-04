@@ -52,10 +52,15 @@ class Settings(BaseSettings):
     #: Örn. "example-llm.com" (şemasız!). Zorunlu alan.
     target_domain: str = "localhost"
     upstream_scheme: Literal["https", "http"] = "https"
-    #: Stream uç noktası şablonu; {chat_id} yer tutucusu zorunlu.
+    #: Stream uç noktası şablonu. `{chat_id}` yer tutucusu varsa doldurulur;
+    #: yoksa yol olduğu gibi kullanılır (kimlik yalnızca gövdede taşınıyor demektir).
+    #: Varsayılan eski bir uçtur; tarayıcı cURL'ünden `scripts/curl_to_env.py` ile
+    #: alınmalıdır — aksi halde upstream HTTP 404 döner.
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
+    #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
+    upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
     #: "recaptchaV2Token" olabilir; tarayıcı isteğinden birebir kopyalayın.
     upstream_recaptcha_field: str = "recaptchaV3Token"
@@ -199,11 +204,25 @@ class Settings(BaseSettings):
     def origin(self) -> str:
         return self.base_url
 
+    @staticmethod
+    def _join_url(base: str, path: str, chat_id: str) -> str:
+        """Yolu birleştirir; `{chat_id}` varsa yerleştirir, yoksa yolu olduğu gibi bırakır.
+
+        `.format()` kullanılmaz: yoldaki başka `{...}` süslü parantezleri KeyError
+        üretmesin ve yer tutucusu olmayan uçlar (create-evaluation) bozulmasın.
+        """
+        path = (path or "/").strip() or "/"
+        if not path.startswith("/") and not path.startswith("?"):
+            path = "/" + path
+        if "{chat_id}" in path:
+            path = path.replace("{chat_id}", chat_id)
+        return f"{base}{path}"
+
     def stream_url(self, chat_id: str) -> str:
-        return self.base_url + self.upstream_stream_path.format(chat_id=chat_id)
+        return self._join_url(self.base_url, self.upstream_stream_path, chat_id)
 
     def referer_url(self, chat_id: str) -> str:
-        return self.base_url + self.upstream_referer_path.format(chat_id=chat_id)
+        return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
 
     def parsed_extra_headers(self) -> dict[str, str]:
         out: dict[str, str] = {}

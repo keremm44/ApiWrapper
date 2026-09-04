@@ -33,6 +33,8 @@ class UpstreamPayload(BaseModel):
     user_message: UserMessage = Field(alias="userMessage")
     modality: str = "chat"
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
+    #: Yeni uçlar (`create-evaluation`) `mode: "direct"` bekler; eski uçlar yok sayar.
+    mode: str | None = None
 
     def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:
         """Upstream'in beklediği alan adlarıyla (camelCase) sözlük döndürür.

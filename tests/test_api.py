@@ -73,6 +73,28 @@ def test_unknown_model_returns_404(client):
     assert response.json()["error"]["code"] == "model_not_found"
 
 
+def test_unprefixed_openai_routes_are_aliased(client):
+    """OpenAI SDK base_url '/v1' olmadan verilirse /chat/completions 404 olmamalı."""
+    models = client.get("/models")
+    assert models.status_code == 200
+    assert {m["id"] for m in models.json()["data"]} == {"test-model", "second-model"}
+
+    missing = client.post(
+        "/chat/completions",
+        json={"model": "ghost", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "model_not_found"
+
+
+def test_unknown_local_route_has_helpful_404(client):
+    response = client.get("/v1/this-does-not-exist")
+    assert response.status_code == 404
+    error = response.json()["error"]
+    assert error["code"] == "not_found"
+    assert "/v1/chat/completions" in error["message"]
+
+
 # ------------------------------------------------------------- completions
 @respx.mock
 def test_non_streaming_completion(client):
@@ -188,6 +210,60 @@ def test_upstream_error_becomes_502(client):
     )
     assert response.status_code == 502
     assert response.json()["error"]["type"] == "upstream_error"
+
+
+@respx.mock
+def test_upstream_404_is_actionable(client):
+    stream_route(respx).mock(return_value=httpx.Response(404, content=b"not found"))
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "upstream_not_found"
+    assert "UPSTREAM_STREAM_PATH" in error["message"]
+    assert "curl_to_env" in error["message"]
+
+
+@respx.mock
+def test_upstream_redirect_is_not_followed_silently(client):
+    stream_route(respx).mock(
+        return_value=httpx.Response(
+            301, headers={"location": "/nextjs-api/stream/create-evaluation"}
+        )
+    )
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+    )
+    assert response.status_code == 502
+    error = response.json()["error"]
+    assert error["code"] == "upstream_redirect"
+    assert "create-evaluation" in error["message"]
+
+
+@respx.mock
+def test_stream_path_without_chat_id_placeholder_is_used():
+    """Yer tutucusuz yol (create-evaluation) chat_id eklemeden çağrılmalı."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    url = f"https://{UPSTREAM_DOMAIN}/nextjs-api/stream/create-evaluation"
+    route = respx.post(url).mock(return_value=httpx.Response(200, content=ai_stream("ok")))
+    app = create_app(
+        make_settings(upstream_stream_path="/nextjs-api/stream/create-evaluation")
+    )
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        response = local.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert response.status_code == 200
+    assert str(route.calls[0].request.url) == url
 
 
 @respx.mock

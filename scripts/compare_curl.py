@@ -15,6 +15,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -142,14 +143,36 @@ def main() -> int:
     ref_body = load_body(reference["body"])
 
     settings = Settings()
-    chat_id = ref_body.get("id") or "CHAT_ID"
+    chat_id = str(ref_body.get("id") or "CHAT_ID")
     ours = build_stream_headers(settings, chat_id)
     ours = {k.lower(): v for k, v in ours.items()}
+    problems = 0
+
+    print(f"\n=== URL {DIM}(yol — 404'ün en sık nedeni){RESET} ===\n")
+    ref_url = reference["url"]
+    our_url = settings.stream_url(chat_id)
+    ref_path = urlsplit(ref_url).path if ref_url else ""
+    our_path = urlsplit(our_url).path
+    ref_path_normalized = ref_path.replace(chat_id, "{chat_id}") if chat_id else ref_path
+    our_path_normalized = settings.upstream_stream_path.split("?", 1)[0]
+    if ref_path and ref_path.rstrip("/") == our_path.rstrip("/"):
+        print(f"{GREEN}  EŞLEŞTİ {RESET}{our_path}")
+    elif ref_path_normalized.rstrip("/") == our_path_normalized.rstrip("/"):
+        print(f"{GREEN}  EŞLEŞTİ {RESET}{our_path_normalized}")
+    else:
+        print(f"{RED}  FARKLI  {RESET}akış yolu")
+        print(f"{DIM}      tarayıcı: {ref_path or '(yok)'}{RESET}")
+        print(f"{DIM}      bizim   : {our_path}{RESET}")
+        print(
+            f"{RED}      !! UPSTREAM_STREAM_PATH={settings.upstream_stream_path} "
+            "tarayıcıdaki yolla uyuşmuyor; bu HTTP 404 üretir.{RESET}"
+        )
+        print("         python scripts/curl_to_env.py <curl.txt> --write")
+        problems += 1
 
     print(f"\n=== Başlık karşılaştırması {DIM}(referans = tarayıcı cURL'ü){RESET} ===\n")
 
     names = sorted((set(ref_headers) | set(ours)) - IGNORED_HEADERS)
-    problems = 0
     for name in names:
         theirs = ref_headers.get(name)
         mine = ours.get(name)
@@ -179,6 +202,8 @@ def main() -> int:
             "modality",
             settings.upstream_recaptcha_field,
         }
+        if settings.upstream_mode.strip():
+            our_fields.add("mode")
         for field in sorted(expected_fields | our_fields):
             in_ref, in_ours = field in expected_fields, field in our_fields
             if in_ref and in_ours:

@@ -51,7 +51,8 @@ make run                  # http://localhost:8000/docs
 | `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
 
 > Hedef domain ve model kimlikleri **kodda gömülü değildir**; yalnızca `.env` ve
-> `config/models.yaml` üzerinden okunur.
+> `config/models.yaml` üzerinden okunur. `UPSTREAM_STREAM_PATH` varsayılanı eski bir
+> uçtur — tarayıcı cURL'ünden alınmazsa upstream **HTTP 404** döner.
 
 ---
 
@@ -185,6 +186,8 @@ curl -N http://localhost:8000/v1/chat/completions \
 
 **OpenAI Python SDK**
 
+`base_url` `/v1` ile veya onsuz verilebilir; her iki biçim de aynı uçlara gider.
+
 ```python
 from openai import OpenAI
 
@@ -204,6 +207,17 @@ for chunk in stream:
 `chat_id` yeniden kullanılır.
 
 ---
+
+## 404 / yanlış uç
+
+İki farklı 404 vardır; karıştırmayın:
+
+| Kaynak | Belirti | Çözüm |
+|---|---|---|
+| Yerel API | `Unknown endpoint … /chat/completions` | `base_url` olarak `http://localhost:8000` veya `http://localhost:8000/v1` kullanın (ikisi de çalışır). Bilinmeyen model `model_not_found` döner. |
+| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. `python scripts/curl_to_env.py request.txt --write` çalıştırın. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
+
+`python scripts/compare_curl.py request.txt` artık **URL yolunu** da karşılaştırır; buradaki `FARKLI` satırı 404'ün doğrudan nedenidir.
 
 ## reCAPTCHA sağlayıcıları
 

@@ -21,6 +21,20 @@ def test_parses_text_event():
     assert event.text == "Merhaba dünya"
 
 
+def test_parses_new_ai_sdk_text_and_reasoning_codes():
+    text = parse_line('a0:"Merhaba"')
+    assert text is not None
+    assert text.type is EventType.TEXT
+    assert text.text == "Merhaba"
+    thinking = parse_line('ag:"düşünüyorum"')
+    assert thinking is not None
+    assert thinking.type is EventType.REASONING
+    done = parse_line('ad:{"finishReason":"stop"}')
+    assert done is not None
+    assert done.type is EventType.FINISH
+    assert done.finish_reason == "stop"
+
+
 def test_parses_start_event():
     event = parse_line('f:{"messageId":"m1"}')
     assert event.type is EventType.START

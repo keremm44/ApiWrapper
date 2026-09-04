@@ -154,11 +154,21 @@ def register_exception_handlers(app: FastAPI) -> None:
         )
 
     @app.exception_handler(StarletteHTTPException)
-    async def _http_error(_request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    async def _http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
         err_type = "invalid_request_error" if exc.status_code < 500 else "internal_error"
+        message = str(exc.detail)
+        code = None
+        if exc.status_code == 404:
+            path = request.url.path
+            message = (
+                f"Unknown endpoint {request.method} {path}. "
+                "OpenAI-compatible routes: POST /v1/chat/completions, GET /v1/models "
+                "(the /v1 prefix is optional)."
+            )
+            code = "not_found"
         return JSONResponse(
             status_code=exc.status_code,
-            content=error_payload(str(exc.detail), err_type),
+            content=error_payload(message, err_type, code=code),
             headers=getattr(exc, "headers", None),
         )
 

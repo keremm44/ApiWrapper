@@ -158,6 +158,7 @@ class CompletionService:
             return UpstreamTimeoutError(str(exc))
         if isinstance(exc, UpstreamHTTPError):
             status = exc.status_code or 502
+            url = exc.url or ""
             if status == 429:
                 return APIWrapperError(
                     "Upstream rate limit reached. Please retry later.",
@@ -165,9 +166,31 @@ class CompletionService:
                     err_type="rate_limit_error",
                     code="upstream_rate_limited",
                 )
+            if status == 404:
+                target = url or "the configured stream URL"
+                return APIWrapperError(
+                    f"Upstream returned HTTP 404 for {target}. "
+                    "UPSTREAM_STREAM_PATH does not match the live endpoint "
+                    "(the default '/nextjs-api/stream/post-to-evaluation/{chat_id}' "
+                    "is often outdated; newer hosts use "
+                    "'/nextjs-api/stream/create-evaluation' with the id only in the body). "
+                    "Copy the browser request as cURL and run "
+                    "`python scripts/curl_to_env.py <file> --write`.",
+                    status_code=502,
+                    err_type="upstream_error",
+                    code="upstream_not_found",
+                )
+            if 300 <= status < 400:
+                return APIWrapperError(
+                    f"{exc.message} Update UPSTREAM_STREAM_PATH to the redirected "
+                    "path (`python scripts/curl_to_env.py <file> --write`).",
+                    status_code=502,
+                    err_type="upstream_error",
+                    code="upstream_redirect",
+                )
             return UpstreamError(
-                f"Upstream request failed with HTTP {status}.",
-                status_code=502 if status >= 500 else 502,
+                f"Upstream request failed with HTTP {status}"
+                + (f" for {url}." if url else "."),
             )
         if isinstance(exc, (UpstreamNetworkError, UpstreamProtocolError)):
             return UpstreamError(str(exc))
@@ -198,6 +221,7 @@ class CompletionService:
             upstream_model=entry.upstream_id,
             chat_id=built.chat_id,
             prompt_chars=len(built.prompt),
+            url=self.settings.stream_url(built.chat_id),
         )
         try:
             async with self.upstream.stream_completion(

@@ -29,6 +29,7 @@ logger = get_logger(__name__)
 #: Kod → olay türü eşlemesi.
 CODE_MAP: dict[str, EventType] = {
     "0": EventType.TEXT,
+    "a0": EventType.TEXT,  # yeni AI SDK metin delta
     "f": EventType.START,
     "2": EventType.DATA,
     "8": EventType.MESSAGE_ANNOTATION,
@@ -37,11 +38,13 @@ CODE_MAP: dict[str, EventType] = {
     "b": EventType.TOOL_CALL,
     "c": EventType.TOOL_CALL,
     "g": EventType.REASONING,
+    "ag": EventType.REASONING,  # yeni AI SDK düşünme/akıl yürütme
     "i": EventType.REASONING,
     "j": EventType.REASONING,
     "3": EventType.ERROR,
     "e": EventType.STEP_FINISH,
     "d": EventType.FINISH,
+    "ad": EventType.FINISH,  # yeni AI SDK metadata/bitiş
 }
 
 _FINISH_REASON_MAP = {

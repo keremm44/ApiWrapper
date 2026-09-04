@@ -70,6 +70,7 @@ def test_extracts_every_setting_from_curl(sample):
     env, warnings, model_id = build_settings(parse_curl(_curl(sample["cookie"], sample["body"])))
 
     assert env["TARGET_DOMAIN"] == "example-llm.ai"
+    assert env["UPSTREAM_STREAM_PATH"] == "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     assert env["UPSTREAM_COOKIE"] == sample["cookie"]
     assert env["UPSTREAM_RECAPTCHA_FIELD"] == "recaptchaV2Token"
     assert env["RECAPTCHA_STATIC_TOKEN"] == sample["body"]["recaptchaV2Token"]
@@ -195,15 +196,16 @@ def test_known_telemetry_hosts_are_rejected(host: str):
 def test_unexpected_path_is_warned_but_not_critical():
     """Doğru alan adı ama yanlış uç: uyar, ama yazmayı engelleme."""
     curl = "curl 'https://example-llm.ai/api/session' -H 'cookie: a-auth=b' --data-raw '{}'"
-    _, warnings, _ = build_settings(parse_curl(curl))
-    assert any("post-to-evaluation" in w for w in warnings)
+    env, warnings, _ = build_settings(parse_curl(curl))
+    assert env["UPSTREAM_STREAM_PATH"] == "/api/session"
+    assert any("create-evaluation" in w or "post-to-evaluation" in w for w in warnings)
     assert not any(w.startswith("KRİTİK") for w in warnings)
 
 
 def test_correct_endpoint_produces_no_path_or_host_warning(sample):
     curl = _curl(sample["cookie"], sample["body"])
     _, warnings, _ = build_settings(parse_curl(curl))
-    assert not any("post-to-evaluation" in w for w in warnings)
+    assert not any("içermiyor" in w for w in warnings)
     assert not any(w.startswith("KRİTİK") for w in warnings)
 
 
@@ -248,12 +250,44 @@ def test_short_id_does_not_corrupt_path():
     """Kısa bir 'id' değeri yol içinde harf dizisine denk gelmemeli."""
     path = "/nextjs-api/stream/post-to-evaluation"
     env, _, _ = build_settings(parse_curl(_curl_with_path(path, "xt")))
-    assert "{chat_id}" not in env.get("UPSTREAM_STREAM_PATH", "")
+    assert env["UPSTREAM_STREAM_PATH"] == path
+    assert "{chat_id}" not in env["UPSTREAM_STREAM_PATH"]
 
 
-def test_warns_when_chat_id_missing_from_path():
+def test_path_without_chat_id_is_kept_as_is():
+    """Yeni uçlar kimliği URL'de taşımaz; yol yine de .env'e yazılmalıdır.
+
+    Aksi halde varsayılan `.../post-to-evaluation/{chat_id}` kullanılır ve
+    gerçek istek HTTP 404 ile düşer.
+    """
     env, warnings, _ = build_settings(
-        parse_curl(_curl_with_path("/nextjs-api/stream/post-to-evaluation", "x"))
+        parse_curl(_curl_with_path("/nextjs-api/stream/create-evaluation", "x"))
     )
-    assert "UPSTREAM_STREAM_PATH" not in env
-    assert any("UPSTREAM_STREAM_PATH" in w for w in warnings)
+    assert env["UPSTREAM_STREAM_PATH"] == "/nextjs-api/stream/create-evaluation"
+    assert not any(w.startswith("KRİTİK") for w in warnings)
+    assert not any("içermiyor" in w for w in warnings)
+
+
+def test_create_evaluation_path_is_not_flagged_as_wrong_endpoint():
+    chat_id = "ffd33ec3-8749-4263-9201-fe7248be8694"
+    env, warnings, _ = build_settings(
+        parse_curl(_curl_with_path("/nextjs-api/stream/create-evaluation", chat_id))
+    )
+    assert env["UPSTREAM_STREAM_PATH"] == "/nextjs-api/stream/create-evaluation"
+    assert "{chat_id}" not in env["UPSTREAM_STREAM_PATH"]
+    assert not any("içermiyor" in w for w in warnings)
+
+
+def test_query_string_is_preserved_on_stream_path():
+    chat_id = "ffd33ec3-8749-4263-9201-fe7248be8694"
+    env, _, _ = build_settings(
+        parse_curl(_curl_with_path(f"/api/stream/{chat_id}?src=web", chat_id))
+    )
+    assert env["UPSTREAM_STREAM_PATH"] == "/api/stream/{chat_id}?src=web"
+
+
+def test_mode_is_extracted_from_body(sample):
+    body = dict(sample["body"])
+    body["mode"] = "direct"
+    env, _, _ = build_settings(parse_curl(_curl(sample["cookie"], body)))
+    assert env["UPSTREAM_MODE"] == "direct"

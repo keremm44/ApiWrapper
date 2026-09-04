@@ -136,3 +136,17 @@ def test_built_payload_matches_target_wire_format():
     assert wire["userMessage"]["content"] == "Merhaba"
     assert wire["userMessage"]["experimental_attachments"] == []
     assert wire["userMessage"]["metadata"] == {}
+    assert "mode" not in wire
+
+
+def test_built_payload_includes_mode_when_configured():
+    settings = make_settings(upstream_mode="direct")
+    request = ChatCompletionRequest(model="test-model", messages=[msg("user", "hi")])
+    wire = build_upstream_request(
+        request,
+        settings=settings,
+        upstream_model_id="u1",
+        chat_id="c1",
+        recaptcha_token="",
+    ).payload.to_wire()
+    assert wire["mode"] == "direct"

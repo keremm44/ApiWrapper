@@ -177,6 +177,25 @@ def test_parse_retry_after():
     assert parse_retry_after("100000") == 300.0
 
 
+# ----------------------------------------------------------- stream url
+def test_stream_url_substitutes_chat_id():
+    settings = make_settings()
+    assert settings.stream_url("abc").endswith("/nextjs-api/stream/post-to-evaluation/abc")
+
+
+def test_stream_url_without_placeholder_keeps_path():
+    settings = make_settings(upstream_stream_path="/nextjs-api/stream/create-evaluation")
+    url = settings.stream_url("abc-should-not-appear")
+    assert url.endswith("/nextjs-api/stream/create-evaluation")
+    assert "abc-should-not-appear" not in url
+
+
+def test_stream_url_adds_leading_slash_and_ignores_extra_braces():
+    settings = make_settings(upstream_stream_path="api/stream/{chat_id}?x={keep}")
+    url = settings.stream_url("zz")
+    assert url.endswith("/api/stream/zz?x={keep}")
+
+
 # ----------------------------------------------------------------- tokens
 def test_token_counting_is_positive_and_monotonic():
     assert count_tokens("") == 0

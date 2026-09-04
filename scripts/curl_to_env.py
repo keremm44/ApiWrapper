@@ -12,6 +12,8 @@ kalkar: cURL ne veriyorsa birebir o yazılır.
 
 Çıkarılanlar:
   * ``TARGET_DOMAIN``        — URL'nin alan adı (şemasız)
+  * ``UPSTREAM_STREAM_PATH`` — gerçek akış yolu (``{chat_id}`` varsa parametreleştirilir)
+  * ``UPSTREAM_MODE``        — gövdedeki ``mode`` (örn. ``direct``)
   * ``UPSTREAM_COOKIE``      — ``cookie`` başlığının tamamı
   * ``UPSTREAM_ACCEPT_LANGUAGE``
   * ``UPSTREAM_USER_AGENT``
@@ -46,6 +48,7 @@ CAPTCHA_FIELDS: tuple[str, ...] = (
 ENV_ORDER: tuple[str, ...] = (
     "TARGET_DOMAIN",
     "UPSTREAM_STREAM_PATH",
+    "UPSTREAM_MODE",
     "UPSTREAM_RECAPTCHA_FIELD",
     "UPSTREAM_ACCEPT_LANGUAGE",
     "UPSTREAM_USER_AGENT",
@@ -84,8 +87,12 @@ _UUID_RE = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 )
 
-#: Hedef akış ucunu tanıyan iz: cURL doğru istekten alınmışsa yolda bulunur.
-_EXPECTED_PATH_HINT = "post-to-evaluation"
+#: Hedef akış ucunu tanıyan izler. Eski `post-to-evaluation/{chat_id}` ve yeni
+#: `create-evaluation` (kimlik gövdede) birlikte kabul edilir.
+_STREAM_PATH_HINTS: tuple[str, ...] = (
+    "post-to-evaluation",
+    "create-evaluation",
+)
 
 
 def _mask(value: str, keep: int = 6) -> str:
@@ -130,28 +137,26 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
     if any(marker in lowered_host for marker in TELEMETRY_HOSTS):
         warnings.append(
             f"KRİTİK: '{host}' bir telemetri/analitik adresi; sohbet ucu değil. "
-            "Network sekmesinde 'post-to-evaluation' isteğine sağ tıklayıp "
-            "cURL'ü yeniden kopyalayın."
+            "Network sekmesinde sohbet akış isteğine ('create-evaluation' veya "
+            "'post-to-evaluation') sağ tıklayıp cURL'ü yeniden kopyalayın."
         )
-    elif split and _EXPECTED_PATH_HINT not in split.path.lower():
+    elif split and not _looks_like_stream_path(split.path):
         warnings.append(
-            f"URL yolu beklenen '{_EXPECTED_PATH_HINT}' ucunu içermiyor: "
-            f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir."
+            f"URL yolu beklenen sohbet akış ucunu içermiyor: "
+            f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir "
+            "(create-evaluation / post-to-evaluation arayın)."
         )
 
     # --- akış yolu (sabit varsayım yerine cURL'deki gerçek yol)
     if split and split.path:
-        template = _stream_path_template(split.path, body)
-        if template:
-            env["UPSTREAM_STREAM_PATH"] = template
-            if template != DEFAULT_STREAM_PATH:
-                warnings.append(
-                    f"Akış yolu varsayılandan farklı, .env'e yazıldı: {template}"
-                )
-        else:
+        full_path = split.path
+        if split.query:
+            full_path = f"{full_path}?{split.query}"
+        template = _stream_path_template(full_path, body)
+        env["UPSTREAM_STREAM_PATH"] = template
+        if template != DEFAULT_STREAM_PATH:
             warnings.append(
-                f"URL yolundaki sohbet kimliği tanınamadı ({split.path}); "
-                "UPSTREAM_STREAM_PATH elle ayarlanmalı."
+                f"Akış yolu varsayılandan farklı, .env'e yazıldı: {template}"
             )
 
     # --- başlıklar
@@ -189,6 +194,11 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
             "RECAPTCHA_PROVIDER=noop kullanın."
         )
 
+    # --- gövde `mode` (yeni uçlar "direct" bekler)
+    mode = body.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        env["UPSTREAM_MODE"] = mode.strip()
+
     # --- model kimliği
     model_id = body.get("modelAId")
     if not isinstance(model_id, str) or not model_id.strip():
@@ -204,24 +214,42 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
     return env, warnings, model_id
 
 
-def _stream_path_template(path: str, body: dict[str, Any]) -> str | None:
+def _looks_like_stream_path(path: str) -> bool:
+    """cURL'ün sohbet akış ucundan alınmış olma ihtimalini sezgisel kontrol eder."""
+    lowered = (path or "").lower()
+    if any(hint in lowered for hint in _STREAM_PATH_HINTS):
+        return True
+    parts = [part for part in lowered.split("/") if part]
+    return "stream" in parts
+
+
+def _stream_path_template(path: str, body: dict[str, Any]) -> str:
     """URL yolundaki sohbet kimliğini ``{chat_id}`` yer tutucusuna çevirir.
 
-    Upstream yolu sürümlenebildiği için (ör. ``/nextjs-api/stream/...`` yerine
-    ``/api/stream/...``) sabit varsayım HTTP 404 üretir. Yol cURL'den alınır ve
-    yalnızca kimlik kısmı parametreleştirilir.
+    Upstream yolu sürümlenebildiği ve kimliği URL'de taşımayabildiği için
+    (ör. ``/nextjs-api/stream/create-evaluation``) sabit varsayım HTTP 404
+    üretir. Yol her zaman cURL'den alınır; kimlik bir yol segmentiyse
+    parametreleştirilir, değilse yol olduğu gibi yazılır.
     """
+    raw_path, _, query = (path or "/").partition("?")
+    if not raw_path.startswith("/"):
+        raw_path = "/" + raw_path
+
+    def _with_query(template: str) -> str:
+        return f"{template}?{query}" if query else template
+
     chat_id = body.get("id")
     # Yalnızca tam bir yol segmentiyle eşleşmeli: kısa bir "id" değeri yolun
     # ortasındaki harflere denk gelip yolu bozabilir.
     if isinstance(chat_id, str) and chat_id:
-        segments = path.split("/")
+        segments = raw_path.split("/")
         if chat_id in segments:
-            return "/".join("{chat_id}" if seg == chat_id else seg for seg in segments)
-    match = _UUID_RE.search(path)
+            templated = "/".join("{chat_id}" if seg == chat_id else seg for seg in segments)
+            return _with_query(templated)
+    match = _UUID_RE.search(raw_path)
     if match:
-        return path[: match.start()] + "{chat_id}" + path[match.end() :]
-    return None
+        return _with_query(raw_path[: match.start()] + "{chat_id}" + raw_path[match.end() :])
+    return _with_query(raw_path)
 
 
 def merge_env(path: Path, updates: dict[str, str]) -> str:

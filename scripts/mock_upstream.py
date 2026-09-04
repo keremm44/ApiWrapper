@@ -28,7 +28,8 @@ async def chat_page(chat_id: str) -> HTMLResponse:
 
 
 @app.post("/nextjs-api/stream/post-to-evaluation/{chat_id}")
-async def stream(chat_id: str, request: Request):
+@app.post("/nextjs-api/stream/create-evaluation")
+async def stream(request: Request, chat_id: str = "mock"):
     if REQUIRE_AUTH:
         authorization = request.headers.get("authorization", "")
         if not authorization.lower().startswith("bearer ") or len(authorization) < 20:

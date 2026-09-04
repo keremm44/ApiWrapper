@@ -133,6 +133,7 @@ def build_upstream_request(
         ),
         modality="chat",
         recaptchaV3Token=recaptcha_token,
+        mode=settings.upstream_mode.strip() or None,
     )
 
     return BuiltRequest(

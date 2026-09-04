@@ -79,6 +79,8 @@ class UpstreamClient:
         kwargs: dict[str, object] = {
             "timeout": timeout,
             "limits": limits,
+            # Stream POST'unda yönlendirme takip edilmez (aşağıda send() override).
+            # 301/302 POST→GET'e dönüşüp gövdeyi düşürür ve sahte 404 üretir.
             "follow_redirects": True,
             "verify": self.settings.upstream_verify_tls,
             "trust_env": False,
@@ -175,13 +177,41 @@ class UpstreamClient:
                 )
                 response: httpx.Response | None = None
                 try:
-                    response = await self.client.send(request, stream=True)
+                    # POST gövdesini 301/302 ile GET'e çevirmemek için yönlendirme kapalı.
+                    response = await self.client.send(
+                        request, stream=True, follow_redirects=False
+                    )
                 except httpx.TimeoutException as exc:
-                    last_error = UpstreamTimeout(f"Upstream timed out: {exc}")
+                    last_error = UpstreamTimeout(f"Upstream timed out: {exc}", url=url)
                 except httpx.HTTPError as exc:
-                    last_error = UpstreamNetworkError(f"Upstream network error: {exc}")
+                    last_error = UpstreamNetworkError(
+                        f"Upstream network error: {exc}", url=url
+                    )
                 else:
                     status = response.status_code
+                    if 300 <= status < 400:
+                        location = response.headers.get("location", "")
+                        error_body = await self._read_error_body(response)
+                        await response.aclose()
+                        metrics.inc(
+                            "apiwrapper_upstream_errors_total",
+                            labels={"status": str(status)},
+                        )
+                        logger.warning(
+                            "upstream_redirect",
+                            status=status,
+                            url=url,
+                            location=location or None,
+                        )
+                        await self.breaker.record_failure()
+                        raise UpstreamHTTPError(
+                            f"Upstream redirected HTTP {status} from {url} "
+                            f"to {location or '(no Location header)'}.",
+                            status_code=status,
+                            body=error_body,
+                            url=url,
+                        )
+
                     if status < 400:
                         await self.breaker.record_success()
                         try:
@@ -195,6 +225,12 @@ class UpstreamClient:
                     metrics.inc(
                         "apiwrapper_upstream_errors_total", labels={"status": str(status)}
                     )
+                    logger.warning(
+                        "upstream_http_error",
+                        status=status,
+                        url=url,
+                        body=error_body[:300],
+                    )
 
                     if self._is_auth_body(status, error_body) and not self._is_captcha_body(
                         status, error_body
@@ -204,6 +240,7 @@ class UpstreamClient:
                             "Upstream rejected the session credentials.",
                             status_code=status,
                             body=error_body,
+                            url=url,
                         )
 
                     if self._is_captcha_body(status, error_body):
@@ -212,12 +249,14 @@ class UpstreamClient:
                             "Upstream rejected the reCAPTCHA token.",
                             status_code=status,
                             body=error_body,
+                            url=url,
                         )
 
                     last_error = UpstreamHTTPError(
-                        f"Upstream returned HTTP {status}.",
+                        f"Upstream returned HTTP {status} for {url}.",
                         status_code=status,
                         body=error_body,
+                        url=url,
                     )
                     if status not in RETRYABLE_STATUS:
                         await self.breaker.record_failure()
