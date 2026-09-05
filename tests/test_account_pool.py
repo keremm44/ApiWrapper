@@ -49,12 +49,19 @@ def chat_body() -> dict:
 
 
 def route_by_cookie(router: respx.Router, responses: dict[str, httpx.Response]):
-    """Cookie değerine göre yanıt döndürür; beklenmeyen cookie testi patlatır."""
+    """Cookie değerine göre yanıt döndürür; beklenmeyen cookie testi patlatır.
+
+    `httpx.Response` gövdesi tek kullanımlıktır: aynı nesne ikinci kez
+    sunulursa boş akar. Bu yüzden her çağrıda status/gövde'den taze bir yanıt
+    üretilir (devir testlerinde aynı cookie'ye birden çok istek düşebilir).
+    """
+    specs = {cookie: (r.status_code, r.content) for cookie, r in responses.items()}
 
     def handler(request: httpx.Request) -> httpx.Response:
         cookie = request.headers.get("cookie", "")
-        assert cookie in responses, f"beklenmeyen cookie: {cookie!r}"
-        return responses[cookie]
+        assert cookie in specs, f"beklenmeyen cookie: {cookie!r}"
+        status, content = specs[cookie]
+        return httpx.Response(status, content=content)
 
     return router.post(url__startswith=STREAM_URL).mock(side_effect=handler)
 
@@ -258,6 +265,129 @@ def test_no_switch_when_all_accounts_are_locked(pool_client):
     assert second.status_code == 429
     assert "temporarily locked" in second.json()["error"]["message"]
     assert route.call_count == 2
+
+
+# ------------------------------------------------ metin mesajı ile gelen kota
+# Gerçek hedef kısıtlamayı HTTP hatası olarak değil, *akışın içinde metin*
+# olarak gönderiyor. Kota tespiti çağıran tarafta yapıldığı sürece istisna
+# `_events`'in `except UpstreamQuotaExceeded` bloğunun dışında fırlıyordu:
+# istemci 429 görüyordu ama hesap ne dinlenmeye alınıyor ne de bütçe
+# öğreniliyordu. Bu iki test o boşluğu kilitler.
+QUOTA_TEXT = "upstream limit reached"
+
+
+def text_scan_client() -> TestClient:
+    app = create_app(
+        two_account_settings(retry_max_attempts=1, quota_text_scan_chars=200)
+    )
+    client = TestClient(app)
+    client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+    return client
+
+
+@respx.mock
+def test_text_quota_in_stream_switches_account_and_learns_limit():
+    with text_scan_client() as client:
+        route = route_by_cookie(
+            respx,
+            {
+                "COOKIE-1": httpx.Response(200, content=ai_stream(QUOTA_TEXT)),
+                "COOKIE-2": httpx.Response(200, content=ai_stream("ikinci hesap")),
+            },
+        )
+        response = client.post("/v1/chat/completions", json=chat_body())
+
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "ikinci hesap"
+        assert route.call_count == 2
+
+        accounts = client.get("/v1/admin/accounts").json()["accounts"]
+        first = next(a for a in accounts if a["slot"] == 1)
+        # Devir ancak `report_quota` çağrıldıysa olur: dinlenme + öğrenilen sınır.
+        # AIMD kuralı `pencere - 1`; mock `f:` + tek delta gönderdiği için 2-1=1.
+        assert first["quota_hits"] == 1
+        assert first["messages_in_window"] == 2
+        assert first["learned_limit"] == 1
+        assert first["cooldown_remaining_seconds"] == COOLDOWN
+        # Kota metni istemciye sızmamalı.
+        assert QUOTA_TEXT not in response.json()["choices"][0]["message"]["content"]
+
+
+@respx.mock
+def test_text_quota_locks_both_accounts():
+    with text_scan_client() as client:
+        quota = httpx.Response(200, content=ai_stream(QUOTA_TEXT))
+        route = route_by_cookie(respx, {"COOKIE-1": quota, "COOKIE-2": quota})
+
+        response = client.post("/v1/chat/completions", json=chat_body())
+        assert response.status_code == 429
+        assert response.json()["error"]["code"] == "upstream_quota_reached"
+        assert route.call_count == 2
+
+        body = client.get("/v1/admin/accounts").json()
+        assert all(a["quota_hits"] == 1 for a in body["accounts"])
+
+        # İki hesap da dinlenmede: sonraki istek upstream'e hiç gitmez.
+        second = client.post("/v1/chat/completions", json=chat_body())
+        assert second.status_code == 429
+        assert "temporarily locked" in second.json()["error"]["message"]
+        assert route.call_count == 2
+
+
+@respx.mock
+def test_text_quota_after_first_content_does_not_switch_but_is_reported():
+    """İstemciye içerik gittiyse devir yapılmaz; kota yine de raporlanır.
+
+    Devir ancak *hiç içerik gönderilmediyse* güvenlidir — aksi halde iki farklı
+    yanıtın parçaları birbirine karışırdı. Kota yine hesaba yazılır ki bütçe
+    öğrenilsin ve hesap dinlenmeye alınsın.
+    """
+    with text_scan_client() as client:
+        route = route_by_cookie(
+            respx,
+            {
+                "COOKIE-1": httpx.Response(
+                    200, content=ai_stream("normal cevap ", QUOTA_TEXT)
+                ),
+                "COOKIE-2": httpx.Response(200, content=ai_stream("ikinci hesap")),
+            },
+        )
+        response = client.post("/v1/chat/completions", json=chat_body())
+
+        assert response.status_code == 429
+        assert response.json()["error"]["code"] == "upstream_quota_reached"
+        assert route.call_count == 1  # devir yok: içerik zaten yoldaydı
+
+        accounts = client.get("/v1/admin/accounts").json()["accounts"]
+        first = next(a for a in accounts if a["slot"] == 1)
+        second = next(a for a in accounts if a["slot"] == 2)
+        assert first["quota_hits"] == 1  # raporlandı
+        assert first["learned_limit"] == 1
+        assert second["quota_hits"] == 0  # ikinci hesap hiç denenmedi
+
+
+@respx.mock
+def test_start_event_does_not_block_account_switch():
+    """`f:` (messageId) olayı devri engellememeli.
+
+    Gerçek upstream her akışı `f:` ile açar; bu olay istemciye içerik
+    taşımaz. Onu "gönderildi" saymak, kota ilk metin delta'sında geldiğinde
+    devri tamamen kapatıyordu.
+    """
+    with text_scan_client() as client:
+        body = b'f:{"messageId":"msg-1"}\n' + ai_stream(QUOTA_TEXT)
+        route = route_by_cookie(
+            respx,
+            {
+                "COOKIE-1": httpx.Response(200, content=body),
+                "COOKIE-2": httpx.Response(200, content=ai_stream("ikinci hesap")),
+            },
+        )
+        response = client.post("/v1/chat/completions", json=chat_body())
+
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "ikinci hesap"
+        assert route.call_count == 2
 
 
 @respx.mock

@@ -51,6 +51,24 @@ from app.utils.tokens import count_tokens, tiktoken_available
 
 logger = get_logger(__name__)
 
+#: İstemciye *içerik* taşıyan olay türleri. `f:` (START) yalnızca messageId
+#: taşır; onu "gönderildi" sayarsak devir koşulu (`emitted == 0`) gerçek
+#: akışların hepsinde daha ilk metin delta'sında kapanır — upstream her zaman
+#: `f:` ile başladığı için hesap devri hiç çalışmaz.
+_CLIENT_VISIBLE_EVENTS = frozenset(
+    {
+        EventType.TEXT,
+        EventType.REASONING,
+        EventType.DATA,
+        EventType.MESSAGE_ANNOTATION,
+        EventType.TOOL_CALL,
+        EventType.TOOL_RESULT,
+        EventType.STEP_FINISH,
+        EventType.FINISH,
+        EventType.ERROR,
+    }
+)
+
 
 def _dump(chunk) -> dict:
     """Chunk'ı OpenAI'ye yakın biçimde serialize eder (boş alanlar atlanır).
@@ -282,10 +300,13 @@ class CompletionService:
     ) -> AsyncIterator[StreamEvent]:
         """Upstream olay akışı.
 
-        İki otomatik kurtarma yolu vardır: captcha reddinde token bir kez
-        yenilenir, hesap kısıtlamasında başka hesaba geçilir. Her ikisi de
-        **yalnızca istemciye henüz tek bir olay gönderilmediyse** yapılır; aksi
-        halde iki farklı yanıtın parçaları birbirine karışırdı.
+        Üç otomatik kurtarma yolu vardır: captcha reddinde token bir kez
+        yenilenir, hesap kısıtlamasında başka hesaba geçilir. Devir ve captcha
+        yenileme **yalnızca istemciye henüz tek bir olay gönderilmediyse**
+        yapılır; aksi halde iki farklı yanıtın parçaları birbirine karışırdı.
+
+        Kota tespiti de burada yapılır (HTTP hata gövdesi + hata olayı + düz
+        metin delta'sı) ki `report_quota` her yolda çağrılsın.
         """
         max_switches = max(0, self.settings.account_max_switches)
         switches = 0
@@ -294,6 +315,16 @@ class CompletionService:
         account = self._pick_account()
 
         while True:
+            # Kota taraması burada yapılır — çağıran tarafta değil. Aksi halde
+            # istisna `except UpstreamQuotaExceeded` bloğunun *dışında* fırlar
+            # ve hesap devri/cooldown/AIMD hiç devreye girmez (HTTP hata
+            # gövdesi yolunda client istisnayı içeride fırlattığı için o yol
+            # çalışıyordu, metin mesajı yolu çalışmıyordu).
+            #
+            # Tarayıcı **deneme başına** yenilenir: tampon denemeler arasında
+            # korunursa birinci hesabın kota metni ikinci hesabın normal
+            # cevabıyla birleşir ve sağlam hesap da kilitlenir.
+            scanner = self._new_quota_scanner()
             entry, built = await self._prepare(request, client_identity, account)
             request_settings = (
                 account.effective_settings(self.settings) if account else self.settings
@@ -330,7 +361,17 @@ class CompletionService:
                         if emitted == 0 and account is not None:
                             # İlk olay geldi: upstream isteği kabul etti.
                             self.accounts.record_message(account.slot)
-                        emitted += 1
+                        # Kota tespitini yield'dan önce yap: içerik istemciye
+                        # ulaştıktan sonra devir yapılamaz (iki yanıt karışır).
+                        if event.type is EventType.ERROR and event.text:
+                            marker = find_quota_marker(
+                                event.text, self.settings.upstream_limit_markers
+                            )
+                            self._raise_for_quota(marker, event.text)
+                        elif event.type is EventType.TEXT and event.text and scanner.active:
+                            self._raise_for_quota(scanner.feed(event.text), event.text)
+                        if event.type in _CLIENT_VISIBLE_EVENTS:
+                            emitted += 1
                         yield event
                 return
             except UpstreamQuotaExceeded:
@@ -383,14 +424,10 @@ class CompletionService:
         try:
             async for event in self._events(request, client_identity=client_identity):
                 if event.type is EventType.ERROR:
-                    marker = find_quota_marker(
-                        event.text, self.settings.upstream_limit_markers
-                    )
-                    self._raise_for_quota(marker, event.text)
+                    # Kota işaretleri `_events` içinde yakalanıp devir denenir;
+                    # buraya ulaşan hata olayı gerçek bir upstream hatasıdır.
                     raise UpstreamError(f"Upstream error: {event.text}")
                 if event.type in (EventType.TEXT,) and event.text:
-                    if scanner.active:
-                        self._raise_for_quota(scanner.feed(event.text), event.text)
                     if first_token_at is None:
                         first_token_at = time.monotonic()
                         metrics.observe(
@@ -472,15 +509,12 @@ class CompletionService:
                         return
 
                     if event.type is EventType.ERROR:
-                        marker = find_quota_marker(
-                            event.text, self.settings.upstream_limit_markers
-                        )
-                        self._raise_for_quota(marker, event.text)
+                        # Kota işaretleri `_events` içinde yakalanıp devir
+                        # denenir; buraya ulaşan hata gerçek bir upstream
+                        # hatasıdır.
                         raise UpstreamError(f"Upstream error: {event.text}")
 
                     if event.type is EventType.TEXT and event.text:
-                        if scanner.active:
-                            self._raise_for_quota(scanner.feed(event.text), event.text)
                         if first_token_at is None:
                             first_token_at = time.monotonic()
                             metrics.observe(
