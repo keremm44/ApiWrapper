@@ -33,3 +33,19 @@ models:
     aliases:
       - o1
       - reasoner
+
+  # --- Qwen3-Max -----------------------------------------------------------
+  # `upstream_id`, hedef servisin gövdesinde kabul ettiği `modelAId` değeridir
+  # ve Alibaba'nın genel adı değil, *o sitenin* adıdır. Aşağıdaki değer
+  # istemciden gelen adla aynı yazıldı; DOĞRULANMADI. Doğrusunu hedef sitede
+  # modeli seçip DevTools → Network → akış isteğinin `--data-raw` gövdesindeki
+  # `modelAId` alanından alın ve buraya birebir yazın. Yanlışsa upstream isteği
+  # reddeder (wrapper bunu `502 upstream_error` olarak yansıtır).
+  - id: qwen3-max-2025-09-26
+    upstream_id: qwen3-max-2025-09-26
+    owned_by: alibaba
+    description: Qwen3-Max (Eylül 2025) — 1T+ parametreli MoE, 262K bağlam.
+    aliases:
+      - qwen3-max
+      - qwen-max
+      - qwen
