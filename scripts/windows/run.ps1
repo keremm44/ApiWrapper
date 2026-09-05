@@ -53,7 +53,10 @@ if (-not (Test-Path $VenvPython)) {
 if (-not $SkipInstall) {
     Write-Host "Bagimliliklar yukleniyor..." -ForegroundColor Cyan
     & $VenvPython -m pip install --upgrade pip --quiet
-    & $VenvPython -m pip install -e ".[tokens]" --quiet
+    # dev ekstrasi pytest/respx/ruff/mypy icerir; testleri .venv disinda
+    # calistirmaya calisinca "No module named pydantic_settings" gibi hatalar
+    # cikar. Tek dogru yer .venv oldugu icin hepsi birlikte kurulur.
+    & $VenvPython -m pip install -e ".[dev,tokens]" --quiet
     if ($LASTEXITCODE -ne 0) { Write-Host "Kurulum basarisiz." -ForegroundColor Red; exit 1 }
 }
 
