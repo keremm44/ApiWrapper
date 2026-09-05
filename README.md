@@ -221,6 +221,31 @@ for chunk in stream:
 
 `python scripts/compare_curl.py request.txt` artık **URL yolunu** da karşılaştırır; buradaki `FARKLI` satırı 404'ün doğrudan nedenidir.
 
+## Birden çok hesabı cURL ile kaydetme
+
+`curl_to_env.py` her çalıştırmada **bir hesap yuvasına** yazar. cURL'leri sırayla atın:
+1. cURL soneksiz anahtarlara (`UPSTREAM_COOKIE`, `RECAPTCHA_STATIC_TOKEN`, …),
+2. cURL `_2` soneksli anahtarlara (`UPSTREAM_COOKIE_2`, `RECAPTCHA_STATIC_TOKEN_2`, …).
+Hiçbir hesap diğerini ezmez; `models.yaml` yalnızca 1. hesapta güncellenir (model
+kimlikleri hesap başına değildir).
+
+```bash
+python scripts/curl_to_env.py hesap1.txt --write     # -> 1. yuva
+python scripts/curl_to_env.py hesap2.txt --write     # -> 2. yuva
+python scripts/curl_to_env.py - --list-accounts      # kayıtlı hesapları göster
+python scripts/curl_to_env.py hesap1.txt --write --account 1   # 1. yuvayı tazele
+python scripts/curl_to_env.py - --reset-accounts     # tüm yuvaları temizle
+```
+
+Araç artık cURL'deki `authorization` başlığını da yazıyor (`UPSTREAM_ACCESS_TOKEN` +
+`UPSTREAM_AUTH_SCHEME`, `UPSTREAM_AUTH_FROM_COOKIE=false`). Başlık yoksa istek yalnızca
+Cookie ile gider ve bunu belirten bir uyarı üretilir; ne başlık ne oturum çerezi varsa
+"istek anonim gider" uyarısı çıkar. `referer`'dan da `UPSTREAM_REFERER_PATH` şablonu üretilir.
+
+> **Not:** `_2` soneksli anahtarlar kayıt amaçlıdır — uygulama şu an yalnızca soneksiz
+> (1. hesap) anahtarları okuyor. Çoklu hesapların gerçekten kullanılması için hesap
+> havuzu gerekiyor.
+
 ## reCAPTCHA sağlayıcıları
 
 ```bash

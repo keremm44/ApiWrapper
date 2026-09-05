@@ -52,10 +52,42 @@ ENV_ORDER: tuple[str, ...] = (
     "UPSTREAM_RECAPTCHA_FIELD",
     "UPSTREAM_ACCEPT_LANGUAGE",
     "UPSTREAM_USER_AGENT",
+    "UPSTREAM_REFERER_PATH",
     "UPSTREAM_COOKIE",
+    "UPSTREAM_AUTH_FROM_COOKIE",
+    "UPSTREAM_ACCESS_TOKEN",
+    "UPSTREAM_AUTH_SCHEME",
     "RECAPTCHA_PROVIDER",
     "RECAPTCHA_STATIC_TOKEN",
 )
+
+#: Hesap başına tutulan anahtarlar. 1. hesap soneksiz yazılır (mevcut tek hesaplı
+#: kurulum aynen çalışmaya devam eder); 2. hesap `_2`, 3. hesap `_3` soneksi alır.
+#: Böylece cURL'ler sırayla atıldığında her biri kendi boşluğuna yazılır ve
+#: hiçbir hesap diğerini ezmez.
+ACCOUNT_ENV_KEYS: tuple[str, ...] = (
+    "TARGET_DOMAIN",
+    "UPSTREAM_REFERER_PATH",
+    "UPSTREAM_COOKIE",
+    "UPSTREAM_AUTH_FROM_COOKIE",
+    "UPSTREAM_ACCESS_TOKEN",
+    "UPSTREAM_AUTH_SCHEME",
+    "UPSTREAM_USER_AGENT",
+    "UPSTREAM_ACCEPT_LANGUAGE",
+    "RECAPTCHA_STATIC_TOKEN",
+)
+
+#: Hesap yuvasının adını taşıyan anahtar (`UPSTREAM_ACCOUNT_NAME`, `..._2_NAME`, …).
+ACCOUNT_NAME_PREFIX = "UPSTREAM_ACCOUNT"
+
+#: `--reset-accounts` ile temizlenecek anahtarlar.
+ACCOUNT_SCAN_KEYS: tuple[str, ...] = ACCOUNT_ENV_KEYS + ("UPSTREAM_RECAPTCHA_FIELD",)
+
+#: `merge_env` yeni anahtarları bu yorum satırının altına ekler.
+ENV_MARKER_COMMENT = "# scripts/curl_to_env.py tarafından eklendi"
+
+#: Otomatik adlandırma.
+DEFAULT_ACCOUNT_LABELS: tuple[str, ...] = ("hesap-1", "hesap-2", "hesap-3", "hesap-4")
 
 #: Oturum çerezi olma ihtimali olan adlar (uyarı üretmek için).
 _SESSION_HINT = "auth"
@@ -115,8 +147,139 @@ def extract_captcha(body: dict[str, Any]) -> tuple[str | None, str | None]:
     return None, None
 
 
-def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], str | None]:
-    """cURL çıktısından `.env` çiftlerini, uyarıları ve model kimliğini üretir."""
+def extract_authorization(headers: dict[str, str]) -> tuple[str, str] | None:
+    """`authorization` başlığından (şema, token) çiftini çıkarır.
+
+    Bu başlık cURL'de varsa upstream onu bekliyor demektir; `.env`'e yazılmazsa
+    istek eksik parmak iziyle gider ve hedef 401 döner.
+    """
+    raw = (headers.get("authorization") or "").strip()
+    if not raw:
+        return None
+    scheme, _, token = raw.partition(" ")
+    if token.strip():
+        return scheme.strip(), token.strip()
+    return "", raw  # şemasız token
+
+
+def extract_referer_path(headers: dict[str, str]) -> str | None:
+    """`referer` başlığından sohbet sayfası yolunu `{chat_id}` şablonu olarak alır."""
+    raw = (headers.get("referer") or headers.get("origin") or "").strip()
+    if not raw:
+        return None
+    split = urlsplit(raw)
+    if not split.path or split.path == "/":
+        return None
+    match = _UUID_RE.search(split.path)
+    if match:
+        return split.path[: match.start()] + "{chat_id}" + split.path[match.end() :]
+    return split.path
+
+
+def account_name_key(slot: int) -> str:
+    """Hesap yuvasının ad anahtarı: 1. hesap soneksiz, 2. hesap `_2`."""
+    suffix = "" if slot <= 1 else f"_{slot}"
+    return f"{ACCOUNT_NAME_PREFIX}{suffix}_NAME"
+
+
+def account_key(name: str, slot: int) -> str:
+    """Hesaba özgü `.env` anahtarı."""
+    return name if slot <= 1 else f"{name}_{slot}"
+
+
+def split_account_env(
+    env: dict[str, str], slot: int, label: str
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Çıkarılan ayarları (paylaşılan, hesaba özgü) olarak ikiye ayırır."""
+    shared: dict[str, str] = {}
+    account: dict[str, str] = {account_name_key(slot): label}
+    for key, value in env.items():
+        if key in ACCOUNT_ENV_KEYS:
+            account[account_key(key, slot)] = value
+        else:
+            shared[key] = value
+    return shared, account
+
+
+def read_env_keys(path: Path) -> dict[str, str]:
+    """`.env` içindeki `ANAHTAR=değer` satırlarını okur (yorumlar atlanır)."""
+    if not path.exists():
+        return {}
+    found: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        found.setdefault(key.strip(), value.strip())
+    return found
+
+
+def next_free_slot(path: Path) -> int:
+    """Boş olan ilk hesap yuvasını bulur (1'den başlar)."""
+    existing = read_env_keys(path)
+    slot = 1
+    while True:
+        name = existing.get(account_name_key(slot), "")
+        cookie = existing.get(account_key("UPSTREAM_COOKIE", slot), "")
+        if not name and not cookie:
+            return slot
+        slot += 1
+
+
+def _is_account_key(key: str) -> bool:
+    """Anahtar bir hesap yuvasına mı ait? (`X`, `X_2`, `X_3`, `..._NAME`)"""
+    if key in ACCOUNT_SCAN_KEYS:
+        return True
+    if key.startswith(ACCOUNT_NAME_PREFIX) and key.endswith("_NAME"):
+        return True
+    base, sep, suffix = key.rpartition("_")
+    return bool(sep) and base in ACCOUNT_SCAN_KEYS and suffix.isdigit()
+
+
+def strip_account_keys(path: Path) -> int:
+    """`.env`'den hesap anahtarlarını (tüm yuvalar) söker; kalan satır sayısını döndürür."""
+    if not path.exists():
+        return 0
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped == ENV_MARKER_COMMENT:
+            continue  # tekrar birikmesin
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            key = stripped.split("=", 1)[0].strip()
+            if _is_account_key(key):
+                continue
+        kept.append(line)
+    # Sonda biriken boş satırları at.
+    while kept and not kept[-1].strip():
+        kept.pop()
+    path.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+    return len(kept)
+
+
+def count_accounts(values: dict[str, str]) -> int:
+    """`.env` içeriğinde kaç hesap yuvası dolu?"""
+    count = 0
+    slot = 1
+    while True:
+        name = values.get(account_name_key(slot), "")
+        cookie = values.get(account_key("UPSTREAM_COOKIE", slot), "")
+        if not name and not cookie:
+            return count
+        count += 1
+        slot += 1
+
+
+def build_settings(
+    parsed: dict[str, Any], existing: dict[str, str] | None = None
+) -> tuple[dict[str, str], list[str], str | None]:
+    """cURL çıktısından `.env` çiftlerini, uyarıları ve model kimliğini üretir.
+
+    `existing` mevcut `.env` içeriğidir; yalnızca alan adı tutarlılık uyarısı
+    için kullanılır.
+    """
     headers: dict[str, str] = parsed["headers"]
     body = load_body(parsed["body"])
     warnings: list[str] = []
@@ -128,6 +291,13 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
     host = split.netloc if split else ""
     if host:
         env["TARGET_DOMAIN"] = host
+        previous = (existing or {}).get("TARGET_DOMAIN", "")
+        if previous and previous != host:
+            warnings.append(
+                f"UYARI: bu cURL '{host}' alan adına ait ancak .env'de '{previous}' "
+                "kayıtlı. Havuz aynı servisin farklı hesaplarını bekler; farklı bir "
+                "servisin cURL'ü olabilir."
+            )
     else:
         warnings.append("URL bulunamadı; TARGET_DOMAIN elle yazılmalı.")
 
@@ -181,6 +351,45 @@ def build_settings(parsed: dict[str, Any]) -> tuple[dict[str, str], list[str], s
         env["UPSTREAM_ACCEPT_LANGUAGE"] = lang
     if agent := headers.get("user-agent", "").strip():
         env["UPSTREAM_USER_AGENT"] = agent
+
+    # --- referer yolu (sohbet sayfası şablonu; parmak izi için gönderilir)
+    if referer_path := extract_referer_path(headers):
+        env["UPSTREAM_REFERER_PATH"] = referer_path
+
+    # --- Authorization -----------------------------------------------------
+    # cURL'de bu başlık varsa upstream onu bekliyordur. Yazılmazsa istek eksik
+    # gider ve hedef 401 döner; eskiden başlık okunuyor ama sessizce atılıyordu.
+    auth = extract_authorization(headers)
+    if auth is not None:
+        scheme, token = auth
+        env["UPSTREAM_ACCESS_TOKEN"] = token
+        env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
+        env["UPSTREAM_AUTH_SCHEME"] = scheme
+        if not scheme:
+            warnings.append(
+                "authorization başlığı şemasız (örn. 'Bearer' yok); token ham "
+                "gönderilecek."
+            )
+    else:
+        env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
+        # Cookie-only kimlik doğrulama meşru bir kurulum; oturum çerezi zaten
+        # varsa gürültü yapma. İkisi de yoksa istek anonim gider.
+        cookie_names = [
+            p.split("=", 1)[0].strip().lower() for p in cookie.split(";") if "=" in p
+        ]
+        if not any(_SESSION_HINT in name for name in cookie_names):
+            warnings.append(
+                "Ne 'authorization' başlığı ne de oturum çerezi var; istek anonim "
+                "gider ve hedef büyük olasılıkla 401 döner. Giriş yapmış bir "
+                "istekten cURL alın."
+            )
+        else:
+            warnings.append(
+                "cURL'de 'authorization' başlığı yok; istek yalnızca Cookie ile "
+                "gönderilecek. Hedef 401 dönerse UPSTREAM_AUTH_FROM_COOKIE=true yapın "
+                "(token çerezden ayıklanır). Olmayan bir başlık eklemek istek parmak "
+                "izini bozacağı için bu otomatik yapılmıyor."
+            )
 
     # --- captcha
     field, token = extract_captcha(body)
@@ -280,7 +489,7 @@ def merge_env(path: Path, updates: dict[str, str]) -> str:
     if remaining:
         if result and result[-1].strip():
             result.append("")
-        result.append("# scripts/curl_to_env.py tarafından eklendi")
+        result.append(ENV_MARKER_COMMENT)
         for key in ENV_ORDER:
             if key in remaining:
                 result.append(f"{key}={remaining.pop(key)}")
@@ -310,7 +519,12 @@ def update_models_yaml(path: Path, upstream_id: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="cURL komutunu .env ayarlarına çevirir.",
+        description=(
+            "cURL komutunu .env ayarlarına çevirir. Her çalıştırma bir hesap "
+            "yuvasına yazar: 1. cURL soneksiz anahtarlara, 2. cURL '_2' "
+            "soneksli anahtarlara. Böylece cURL'ler sırayla atıldığında hiçbiri "
+            "diğerini ezmez."
+        ),
     )
     parser.add_argument("curl_file", help="cURL komutunu içeren dosya ('-' = stdin)")
     parser.add_argument(
@@ -328,7 +542,44 @@ def main() -> int:
         action="store_true",
         help="Kritik uyarılara rağmen yazmayı sürdür",
     )
+    parser.add_argument(
+        "--account",
+        help=(
+            "Hesap yuvası: '1'/'2' gibi bir yuva numarası ya da 'hesap-1' gibi "
+            "özel bir ad. Verilmezse ilk boş yuva seçilir."
+        ),
+    )
+    parser.add_argument(
+        "--list-accounts", action="store_true", help="Kayıtlı hesapları göster ve çık"
+    )
+    parser.add_argument(
+        "--reset-accounts",
+        action="store_true",
+        help=".env içindeki tüm hesap yuvalarını temizle",
+    )
     args = parser.parse_args()
+
+    env_path = Path(args.env_file)
+
+    if args.reset_accounts:
+        strip_account_keys(env_path)
+        print(f"{env_path} içindeki hesap yuvaları temizlendi.")
+        return 0
+
+    if args.list_accounts:
+        values = read_env_keys(env_path)
+        total = count_accounts(values)
+        if not total:
+            print(f"{env_path} içinde kayıtlı hesap yok.")
+            return 0
+        print(f"{env_path} içinde {total} hesap var:")
+        for slot in range(1, total + 1):
+            print(
+                f"  {slot}. {values.get(account_name_key(slot), '?')} "
+                f"(cookie {len(values.get(account_key('UPSTREAM_COOKIE', slot), ''))} kr, "
+                f"token {len(values.get(account_key('RECAPTCHA_STATIC_TOKEN', slot), ''))} kr)"
+            )
+        return 0
 
     raw = sys.stdin.read() if args.curl_file == "-" else Path(args.curl_file).read_text(
         encoding="utf-8", errors="replace"
@@ -338,22 +589,36 @@ def main() -> int:
         return 2
 
     parsed = parse_curl(raw)
-    env, warnings, model_id = build_settings(parsed)
+    existing = read_env_keys(env_path)
+    env, warnings, model_id = build_settings(parsed, existing)
 
     if not env:
         print("HATA: cURL'den hiçbir ayar çıkarılamadı.", file=sys.stderr)
         return 2
 
-    print("=== Çıkarılan ayarlar ===")
+    slot, label = _resolve_slot(args.account, env_path)
+
+    print(f"=== Çıkarılan ayarlar ({slot}. hesap yuvası: {label}) ===")
+    secret_keys = {
+        "UPSTREAM_COOKIE",
+        "RECAPTCHA_STATIC_TOKEN",
+        "UPSTREAM_ACCESS_TOKEN",
+    }
     for key in ENV_ORDER:
         if key not in env:
             continue
         value = env[key]
-        secret = key in {"UPSTREAM_COOKIE", "RECAPTCHA_STATIC_TOKEN"}
-        shown = value if args.show_secrets or not secret else _mask(value)
-        print(f"  {key}={shown}")
+        target = account_key(key, slot) if key in ACCOUNT_ENV_KEYS else key
+        shown = value if args.show_secrets or key not in secret_keys else _mask(value)
+        print(f"  {target}={shown}")
     if model_id:
-        print(f"  (models.yaml) upstream_id={model_id}")
+        if slot == 1:
+            print(f"  (models.yaml) upstream_id={model_id}")
+        else:
+            print(
+                f"  (models.yaml dokunulmadı; model kimlikleri hesap başına değil. "
+                f"Bu cURL'deki modelAId={model_id})"
+            )
 
     if warnings:
         print("\n=== Uyarılar ===")
@@ -361,7 +626,7 @@ def main() -> int:
             print(f"  ! {item}")
 
     if not args.write:
-        print("\nYazmak için --write ekleyin.")
+        print(f"\nYazmak için --write ekleyin (boş olan yuva: {slot}. hesap).")
         return 0
 
     critical = [w for w in warnings if w.startswith("KRİTİK")]
@@ -373,11 +638,19 @@ def main() -> int:
         )
         return 3
 
-    env_path = Path(args.env_file)
-    env_path.write_text(merge_env(env_path, env), encoding="utf-8")
-    print(f"\n{env_path} güncellendi ({len(env)} anahtar).")
+    shared, account = split_account_env(env, slot, label)
+    env_path.write_text(merge_env(env_path, {**shared, **account}), encoding="utf-8")
 
-    if model_id:
+    total = count_accounts(read_env_keys(env_path))
+    print(f"\n{env_path} güncellendi — {label} {slot}. yuvaya yazıldı.")
+    print(f"Kayıtlı hesap sayısı: {total}")
+    if total > 1:
+        print(
+            "Not: çoklu hesapların kullanılması için hesap havuzu gerekir; "
+            "uygulama şu an yalnızca soneksiz (1. hesap) anahtarları okuyor."
+        )
+
+    if model_id and slot == 1:
         models_path = Path(args.models_file)
         if update_models_yaml(models_path, model_id):
             print(f"{models_path} güncellendi (upstream_id={model_id}).")
@@ -387,6 +660,33 @@ def main() -> int:
                 "değerini elle yazın."
             )
     return 0
+
+
+def _resolve_slot(requested: str | None, env_path: Path) -> tuple[int, str]:
+    """`--account` değerini (yuva numarası, hesap adı) çiftine çevirir."""
+    if not requested:
+        slot = next_free_slot(env_path)
+        return slot, DEFAULT_ACCOUNT_LABELS[slot - 1] if slot <= len(
+            DEFAULT_ACCOUNT_LABELS
+        ) else f"hesap-{slot}"
+
+    text = requested.strip()
+    if text.isdigit():
+        slot = max(1, int(text))
+        return slot, DEFAULT_ACCOUNT_LABELS[slot - 1] if slot <= len(
+            DEFAULT_ACCOUNT_LABELS
+        ) else f"hesap-{slot}"
+
+    existing = read_env_keys(env_path)
+    slot = 1
+    while True:
+        name = existing.get(account_name_key(slot), "")
+        cookie = existing.get(account_key("UPSTREAM_COOKIE", slot), "")
+        if not name and not cookie:
+            return slot, text
+        if name == text:
+            return slot, text  # aynı ad -> aynı yuvayı tazele
+        slot += 1
 
 
 if __name__ == "__main__":

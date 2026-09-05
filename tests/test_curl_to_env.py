@@ -77,7 +77,12 @@ def test_extracts_every_setting_from_curl(sample):
     assert env["RECAPTCHA_PROVIDER"] == "static"
     assert env["UPSTREAM_ACCEPT_LANGUAGE"] == "tr-TR,tr;q=0.9"
     assert model_id == "019f19f2-41f1-7c6d-9891-48d02fd9952c"
-    assert warnings == []
+    # Bu örnek cURL'de 'authorization' başlığı yok; cookie-only kurulum için
+    # bilgilendirme uyarısı üretilir (kritik değildir, yazmayı engellemez).
+    assert not [w for w in warnings if w.startswith("KRİTİK")]
+    assert len(warnings) == 1
+    assert "authorization" in warnings[0]
+    assert not any("anonim" in w for w in warnings)
 
 
 def test_extracted_cookie_is_single_line(sample):
