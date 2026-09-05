@@ -180,7 +180,7 @@ curl -N http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer sk-local-dev-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o-mini",
+    "model": "qwen3.6-max-preview",
     "stream": true,
     "stream_options": {"include_usage": true},
     "messages": [{"role": "user", "content": "Merhaba, kendini tanıt."}]
@@ -197,7 +197,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-local-dev-key")
 
 stream = client.chat.completions.create(
-    model="gpt-4o-mini",
+    model="qwen3.6-max-preview",
     messages=[{"role": "user", "content": "FastAPI'yi üç cümlede anlat."}],
     stream=True,
 )

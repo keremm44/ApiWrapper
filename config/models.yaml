@@ -6,46 +6,21 @@
 #
 # Gerçek upstream model kimliklerini hedef servisin ağ trafiğinden alıp buraya yazın.
 # Kodda hiçbir model kimliği gömülü DEĞİLDİR; tek kaynak bu dosyadır.
+#
+# ÖNEMLİ — sıralama: `scripts/curl_to_env.py` bu dosyadaki İLK `upstream_id`
+# satırını, cURL gövdesinden okuduğu gerçek `modelAId` ile değiştirir. Yani
+# hangi modelin otomatik doldurulmasını istiyorsanız onu EN ÜSTE yazın.
 
-default: gpt-4o-mini
+default: qwen3.6-max-preview
 
 models:
-  - id: gpt-4o-mini
+  # Sitede seçili model bu iken aldığınız cURL'ü curl_to_env.py'ye verin;
+  # aşağıdaki upstream_id gerçek modelAId ile kendiliğinden güncellenir.
+  - id: qwen3.6-max-preview
     upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_1
-    owned_by: upstream
-    description: Hızlı ve ucuz genel amaçlı model.
-    aliases:
-      - gpt-4o-mini-2024-07-18
-      - fast
-
-  - id: gpt-4o
-    upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_2
-    owned_by: upstream
-    description: Yüksek kaliteli genel amaçlı model.
-    aliases:
-      - gpt-4
-      - default
-
-  - id: reasoning-pro
-    upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_3
-    owned_by: upstream
-    description: Uzun düşünme zincirli akıl yürütme modeli.
-    aliases:
-      - o1
-      - reasoner
-
-  # --- Qwen3-Max -----------------------------------------------------------
-  # `upstream_id`, hedef servisin gövdesinde kabul ettiği `modelAId` değeridir
-  # ve Alibaba'nın genel adı değil, *o sitenin* adıdır. Aşağıdaki değer
-  # istemciden gelen adla aynı yazıldı; DOĞRULANMADI. Doğrusunu hedef sitede
-  # modeli seçip DevTools → Network → akış isteğinin `--data-raw` gövdesindeki
-  # `modelAId` alanından alın ve buraya birebir yazın. Yanlışsa upstream isteği
-  # reddeder (wrapper bunu `502 upstream_error` olarak yansıtır).
-  - id: qwen3-max-2025-09-26
-    upstream_id: qwen3-max-2025-09-26
     owned_by: alibaba
-    description: Qwen3-Max (Eylül 2025) — 1T+ parametreli MoE, 262K bağlam.
+    description: Qwen3.6-Max Preview (Nisan 2026) — kod ve akıl yürütme odaklı, 262K bağlam.
     aliases:
-      - qwen3-max
+      - qwen3.6-max
       - qwen-max
       - qwen
