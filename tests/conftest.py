@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterator
 
 import pytest
@@ -10,6 +11,15 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
+
+# Testler her makinede aynı sonucu vermeli. `Settings` varsayılan olarak depo
+# kökündeki `.env` dosyasını VE ortam değişkenlerini okur; geliştiricinin `.env`'i
+# (örn. UPSTREAM_STREAM_PATH, SESSION_REUSE, AUTH_DISABLED) test ayarlarının
+# üzerine sızıp testleri bozuyordu. İkisi de burada kapatılır.
+Settings.model_config["env_file"] = None
+Settings.model_config["env_ignore_empty"] = True
+for _field in Settings.model_fields:
+    os.environ.pop(_field.upper(), None)
 
 TEST_API_KEY = "sk-test-key"
 UPSTREAM_DOMAIN = "upstream.test"
@@ -33,7 +43,7 @@ def make_settings(**overrides) -> Settings:
         "breaker_enabled": False,
     }
     base.update(overrides)
-    return Settings(**base)
+    return Settings(_env_file=None, **base)
 
 
 @pytest.fixture
