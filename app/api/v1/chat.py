@@ -31,6 +31,10 @@ async def create_chat_completion(
     service: CompletionService = Depends(get_completion_service),
 ) -> ChatCompletionResponse | StreamingResponse:
     """OpenAI Chat Completions ile uyumlu tamamlama üretir."""
+    # İstemcinin `conversation_id` gönderemediği durumlarda (Continue, OpenAI SDK)
+    # sohbet yeniden kullanımı API anahtarı parmak izine bağlanır.
+    client_identity: str | None = getattr(request.state, "client_fingerprint", None)
+
     if body.stream:
         async def is_disconnected() -> bool:
             try:
@@ -39,12 +43,14 @@ async def create_chat_completion(
                 return False
 
         return StreamingResponse(
-            service.stream_completion(body, is_disconnected=is_disconnected),
+            service.stream_completion(
+                body, is_disconnected=is_disconnected, client_identity=client_identity
+            ),
             media_type="text/event-stream",
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
-    return await service.create_completion(body)
+    return await service.create_completion(body, client_identity=client_identity)
 
 
 @router.post(

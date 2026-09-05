@@ -20,6 +20,7 @@ from app.core.errors import (
     APIWrapperError,
     RecaptchaError,
     UpstreamError,
+    UpstreamQuotaError,
     UpstreamTimeoutError,
     UpstreamUnavailableError,
 )
@@ -38,8 +39,10 @@ from app.upstream.exceptions import (
     UpstreamHTTPError,
     UpstreamNetworkError,
     UpstreamProtocolError,
+    UpstreamQuotaExceeded,
     UpstreamTimeout,
 )
+from app.upstream.quota import QuotaTextScanner, find_quota_marker, quota_error_message
 from app.upstream.stream_parser import parse_stream
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
@@ -139,6 +142,11 @@ class CompletionService:
                 "Upstream service is temporarily unavailable (circuit breaker open). "
                 "Please retry shortly."
             )
+        if isinstance(exc, UpstreamQuotaExceeded):
+            headers: dict[str, str] = {}
+            if exc.retry_after is not None:
+                headers["retry-after"] = str(max(1, int(exc.retry_after + 0.999)))
+            return UpstreamQuotaError(exc.message, headers=headers)
         if isinstance(exc, UpstreamAuthRejected):
             return APIWrapperError(
                 "The upstream service rejected the session credentials (401). "
@@ -196,10 +204,38 @@ class CompletionService:
             return UpstreamError(str(exc))
         return UpstreamError(f"Unexpected upstream failure: {exc}")
 
-    async def _prepare(self, request: ChatCompletionRequest):
+    def _new_quota_scanner(self) -> QuotaTextScanner:
+        """Düz metin kota taraması için yeni bir tarayıcı üretir."""
+        return QuotaTextScanner(
+            self.settings.upstream_limit_markers,
+            window=self.settings.quota_text_scan_chars,
+        )
+
+    def _raise_for_quota(self, marker: str | None, detail: str) -> None:
+        """Kota işareti bulunduysa uygun istisnayı fırlatır."""
+        if not marker:
+            return
+        metrics.inc(
+            "apiwrapper_upstream_quota_errors_total", labels={"source": "stream"}
+        )
+        logger.warning(
+            "upstream_quota_exceeded",
+            marker=marker,
+            hint=(
+                "Upstream limited this account mid-stream; retrying would only "
+                "extend the lockout."
+            ),
+        )
+        raise UpstreamQuotaExceeded(
+            quota_error_message(marker, "stream", detail), marker=marker
+        )
+
+    async def _prepare(
+        self, request: ChatCompletionRequest, client_identity: str | None = None
+    ):
         """Model çözümü, oturum, captcha token'ı ve gövde inşası."""
         entry = self.registry.resolve(request.model)
-        session = await self.sessions.acquire(request.conversation_id)
+        session = await self.sessions.acquire(request.conversation_id, client_identity)
         token = await self.recaptcha.get_token()
         built = build_upstream_request(
             request,
@@ -211,10 +247,13 @@ class CompletionService:
         return entry, built
 
     async def _events(
-        self, request: ChatCompletionRequest, allow_captcha_retry: bool = True
+        self,
+        request: ChatCompletionRequest,
+        allow_captcha_retry: bool = True,
+        client_identity: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Upstream olay akışı; captcha reddinde bir kez yeniler ve tekrar dener."""
-        entry, built = await self._prepare(request)
+        entry, built = await self._prepare(request, client_identity)
         logger.info(
             "upstream_request",
             model=entry.id,
@@ -244,12 +283,14 @@ class CompletionService:
             if not allow_captcha_retry:
                 raise
             logger.warning("recaptcha_rejected_retrying")
-            async for event in self._events(request, allow_captcha_retry=False):
+            async for event in self._events(
+                request, allow_captcha_retry=False, client_identity=client_identity
+            ):
                 yield event
 
     # --------------------------------------------------------- non-stream
     async def create_completion(
-        self, request: ChatCompletionRequest
+        self, request: ChatCompletionRequest, client_identity: str | None = None
     ) -> ChatCompletionResponse:
         """Tam yanıtı biriktirip tek seferde döndürür."""
         started = time.monotonic()
@@ -261,14 +302,21 @@ class CompletionService:
         finish_reason = "stop"
         reported_usage: dict[str, int] = {}
         first_token_at: float | None = None
+        scanner = self._new_quota_scanner()
 
         metrics.inc("apiwrapper_requests_total", labels={"endpoint": "completions",
                                                           "stream": "false"})
         try:
-            async for event in self._events(request):
+            async for event in self._events(request, client_identity=client_identity):
                 if event.type is EventType.ERROR:
+                    marker = find_quota_marker(
+                        event.text, self.settings.upstream_limit_markers
+                    )
+                    self._raise_for_quota(marker, event.text)
                     raise UpstreamError(f"Upstream error: {event.text}")
                 if event.type in (EventType.TEXT,) and event.text:
+                    if scanner.active:
+                        self._raise_for_quota(scanner.feed(event.text), event.text)
                     if first_token_at is None:
                         first_token_at = time.monotonic()
                         metrics.observe(
@@ -277,6 +325,7 @@ class CompletionService:
                     emitted = stopper.process(event.text)
                     if emitted:
                         parts.append(emitted)
+                        scanner.disable()
                     if stopper.triggered:
                         finish_reason = "stop"
                         break
@@ -316,7 +365,10 @@ class CompletionService:
 
     # ------------------------------------------------------------- stream
     async def stream_completion(
-        self, request: ChatCompletionRequest, is_disconnected=None
+        self,
+        request: ChatCompletionRequest,
+        is_disconnected=None,
+        client_identity: str | None = None,
     ) -> AsyncIterator[str]:
         """SSE gövdesini parça parça üretir. `[DONE]` her koşulda gönderilir."""
         started = time.monotonic()
@@ -330,6 +382,7 @@ class CompletionService:
         completion_text: list[str] = []
         first_token_at: float | None = None
         finished_cleanly = False
+        scanner = self._new_quota_scanner()
 
         metrics.inc("apiwrapper_requests_total", labels={"endpoint": "completions",
                                                           "stream": "true"})
@@ -339,15 +392,21 @@ class CompletionService:
             yield sse_event(_dump(make_role_chunk(completion_id, entry.id, created)))
 
             try:
-                async for event in self._events(request):
+                async for event in self._events(request, client_identity=client_identity):
                     if is_disconnected is not None and await is_disconnected():
                         logger.info("client_disconnected", completion_id=completion_id)
                         return
 
                     if event.type is EventType.ERROR:
+                        marker = find_quota_marker(
+                            event.text, self.settings.upstream_limit_markers
+                        )
+                        self._raise_for_quota(marker, event.text)
                         raise UpstreamError(f"Upstream error: {event.text}")
 
                     if event.type is EventType.TEXT and event.text:
+                        if scanner.active:
+                            self._raise_for_quota(scanner.feed(event.text), event.text)
                         if first_token_at is None:
                             first_token_at = time.monotonic()
                             metrics.observe(
@@ -357,6 +416,7 @@ class CompletionService:
                         emitted = stopper.process(event.text)
                         if emitted:
                             completion_text.append(emitted)
+                            scanner.disable()
                             yield sse_event(
                                 _dump(
                                     make_content_chunk(

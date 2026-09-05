@@ -116,6 +116,18 @@ class UpstreamUnavailableError(UpstreamError):
     code = "upstream_unavailable"
 
 
+class UpstreamQuotaError(UpstreamError):
+    """Upstream hesabı geçici olarak kısıtladı (kota penceresi dolu).
+
+    İstemciler `Retry-After` başlığına bakarak ne kadar bekleyeceğini görebilir;
+    bu yüzden hata 429 olarak yüzeye çıkar.
+    """
+
+    status_code = 429
+    err_type = "rate_limit_error"
+    code = "upstream_quota_reached"
+
+
 class RecaptchaError(APIWrapperError):
     status_code = 503
     err_type = "upstream_error"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 
 from fastapi import Request
@@ -11,6 +12,18 @@ from app.core.errors import AuthenticationError
 from app.core.logging import mask_value
 
 ANONYMOUS = "anonymous"
+
+
+def client_fingerprint(key: str | None) -> str:
+    """Anahtardan log'a yazılabilir, çakışmasız bir istemci kimliği üretir.
+
+    `mask_value` yalnızca ilk 3 + son 2 karakteri tuttuğu için farklı anahtarlar
+    aynı maskeye düşebilir; oturum anahtarı olarak kullanılamaz. Bunun yerine
+    SHA-256 özeti alınır — geri döndürülemez ama aynı anahtar için kararlıdır.
+    """
+    if not key or key == ANONYMOUS:
+        return ANONYMOUS
+    return "cli_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
 
 
 def extract_api_key(request: Request) -> str | None:
@@ -54,7 +67,8 @@ def verify_api_key(request: Request, settings: Settings | None = None) -> str:
 
 
 async def api_key_dependency(request: Request) -> str:
-    """FastAPI bağımlılığı; doğrulanan anahtar kimliğini state'e de yazar."""
+    """FastAPI bağımlılığı; doğrulanan anahtar kimliğini ve parmak izini state'e yazar."""
     identity = verify_api_key(request)
     request.state.api_identity = identity
+    request.state.client_fingerprint = client_fingerprint(extract_api_key(request))
     return identity

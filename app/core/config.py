@@ -90,6 +90,29 @@ class Settings(BaseSettings):
     upstream_verify_tls: bool = True
     upstream_http2: bool = True
 
+    # --------------------------------------------------------------- quota
+    #: Upstream'in hesap kısıtlamasını bildiren metin işaretleri (virgülle ayrılmış).
+    #: İşaretler **ayırt edici ifadeler** olmalı: "rate limit" gibi genel sözler bir
+    #: modelin meşru cevabında da geçebileceği için düz metin taramasında yanlış
+    #: alarm üretir. Hedef servisin gerçek mesajını gözlemlediğinizde buraya birebir
+    #: yazın (örn. "upstream limit reached").
+    upstream_limit_markers: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "upstream limit reached",
+            "message limit reached",
+            "conversation limit reached",
+            "daily limit reached",
+            "usage limit reached",
+            "quota exceeded",
+            "rate limit exceeded",
+            "too many requests",
+        ]
+    )
+    #: Yanıtın ilk kaç karakterinde düz metin kota taraması yapılsın. 0 = kapalı.
+    #: Uçlar kısıtlama mesajını bazen hata olayı yerine metin delta'sı olarak
+    #: gönderir; varsayılan kapalılık yanlış alarm riskini sıfırda tutar.
+    quota_text_scan_chars: int = 0
+
     # -------------------------------------------------------------- timeouts
     connect_timeout: float = 10.0
     read_timeout: float = 300.0
@@ -147,6 +170,16 @@ class Settings(BaseSettings):
     session_cache_size: int = 1024
     #: True ise her istek için yeni chat_id üretilir (durumsuz mod).
     session_stateless: bool = True
+    #: True ise istemci `conversation_id` göndermese bile aynı istemci (API anahtarı)
+    #: için upstream sohbeti yeniden kullanılır; `session_stateless` bu modda yok
+    #: sayılır. OpenAI-uyumlu istemciler (Continue, Cursor, OpenAI SDK) şema dışı
+    #: `conversation_id` alanını gönderemediği için tek sohbetten ilerlemenin yolu bu.
+    session_reuse: bool = False
+    #: Bir upstream sohbeti en fazla bu kadar istek taşısın; sonra yeni sohbet açılır.
+    #: 0 = mesaj sayısı sınırı yok (yalnız `session_ttl` geçerli).
+    session_rotate_after_messages: int = 35
+    #: Bir upstream sohbeti en fazla bu kadar saniye kullanılsın. 0 = yaş sınırı yok.
+    session_rotate_after_seconds: float = 0.0
 
     # --------------------------------------------------------------- models
     models_file: str = "config/models.yaml"
@@ -156,7 +189,11 @@ class Settings(BaseSettings):
 
     # ----------------------------------------------------------- validators
     @field_validator(
-        "api_keys", "cors_origins", "upstream_token_cookie_names", mode="before"
+        "api_keys",
+        "cors_origins",
+        "upstream_token_cookie_names",
+        "upstream_limit_markers",
+        mode="before",
     )
     @classmethod
     def _split_csv(cls, v: object) -> object:

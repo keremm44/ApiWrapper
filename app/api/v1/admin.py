@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import get_recaptcha, get_sessions, get_upstream
 from app.core.logging import mask_value
+from app.core.metrics import metrics
 from app.core.security import api_key_dependency
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
@@ -60,6 +61,22 @@ async def effective_config(request: Request) -> dict[str, Any]:
         "recaptcha_provider": settings.recaptcha_provider,
         "unsupported_params_policy": settings.unsupported_params,
         "stateless_sessions": settings.session_stateless,
+        "quota": {
+            "markers": list(settings.upstream_limit_markers),
+            "text_scan_chars": settings.quota_text_scan_chars,
+            "detected_total": metrics.counter_total(
+                "apiwrapper_upstream_quota_errors_total"
+            ),
+        },
+        "session": {
+            "reuse": settings.session_reuse,
+            "stateless": settings.session_stateless,
+            "rotate_after_messages": settings.session_rotate_after_messages,
+            "rotate_after_seconds": settings.session_rotate_after_seconds,
+            "ttl_seconds": settings.session_ttl,
+            "cached": await request.app.state.sessions.size(),
+            "rotations_total": metrics.counter_total("apiwrapper_sessions_rotated_total"),
+        },
         "rate_limit": {
             "enabled": settings.rate_limit_enabled,
             "rpm": settings.rate_limit_rpm,

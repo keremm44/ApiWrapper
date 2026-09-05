@@ -67,6 +67,11 @@ class MetricsRegistry:
             self._hist_sum[name][key] = self._hist_sum[name].get(key, 0.0) + value
             self._hist_count[name][key] = self._hist_count[name].get(key, 0) + 1
 
+    def counter_total(self, name: str) -> float:
+        """Bir counter'ın tüm etiket serileri toplamını döndürür."""
+        with self._lock:
+            return float(sum(self._counters.get(name, {}).values()))
+
     def render(self) -> str:
         """Prometheus text exposition formatı."""
         lines: list[str] = []
@@ -119,8 +124,18 @@ metrics.describe("apiwrapper_requests_total", "counter", "Toplam HTTP istek say�
 metrics.describe("apiwrapper_request_duration_seconds", "histogram", "HTTP istek süresi.")
 metrics.describe("apiwrapper_upstream_requests_total", "counter", "Upstream istek sayısı.")
 metrics.describe("apiwrapper_upstream_errors_total", "counter", "Upstream hata sayısı.")
+metrics.describe(
+    "apiwrapper_upstream_quota_errors_total",
+    "counter",
+    "Upstream hesap kısıtlama (kota) tespit sayısı.",
+)
 metrics.describe("apiwrapper_time_to_first_token_seconds", "histogram", "İlk token gecikmesi.")
 metrics.describe("apiwrapper_tokens_total", "counter", "İşlenen token sayısı.")
 metrics.describe("apiwrapper_active_streams", "gauge", "Aktif stream sayısı.")
 metrics.describe("apiwrapper_recaptcha_tokens_total", "counter", "Üretilen reCAPTCHA token sayısı.")
 metrics.describe("apiwrapper_circuit_breaker_state", "gauge", "Devre kesici durumu (0/1/2).")
+metrics.describe(
+    "apiwrapper_sessions_rotated_total",
+    "counter",
+    "Eşik aşıldığı için açılan yeni upstream sohbet sayısı.",
+)

@@ -19,14 +19,18 @@ from app.upstream.exceptions import (
     UpstreamAuthRejected,
     UpstreamHTTPError,
     UpstreamNetworkError,
+    UpstreamQuotaExceeded,
     UpstreamTimeout,
 )
 from app.upstream.headers import build_page_headers, build_stream_headers
+from app.upstream.quota import find_quota_marker, normalize_markers, quota_error_message
 from app.utils.backoff import full_jitter_delay, parse_retry_after
 
 logger = get_logger(__name__)
 
 #: Yeniden denenebilir HTTP durum kodları.
+#: Not: 429 burada kalır çünkü upstream geçici bir yavaşlatma için de 429 dönebilir;
+#: ancak gövdede kota işareti varsa istek retry edilmez (aşağıda `_is_quota_body`).
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
 #: Kimlik/captcha reddi olabilecek durum kodları.
 CAPTCHA_STATUS = frozenset({401, 403})
@@ -131,6 +135,18 @@ class UpstreamClient:
             for marker in ("recaptcha", "captcha", "verification", "bot", "forbidden")
         )
 
+    def _is_quota_body(self, status: int, body: str) -> str | None:
+        """Gövde upstream'in hesap kısıtlama mesajını taşıyorsa işareti döndürür.
+
+        Hedef servis kotayı özel bir durum koduyla değil, metinle bildiriyor
+        (örn. "upstream limit reached"). Bu yüzden kod değil gövde esas alınır ve
+        her 4xx/5xx gövdesine bakılır.
+        """
+        if status < 400 or not body:
+            return None
+        markers = normalize_markers(self.settings.upstream_limit_markers)
+        return find_quota_marker(body, markers)
+
     @staticmethod
     def _is_auth_body(status: int, body: str) -> bool:
         """401 yanıtının oturum/`access_token` reddi olup olmadığını ayırt eder.
@@ -231,6 +247,38 @@ class UpstreamClient:
                         url=url,
                         body=error_body[:300],
                     )
+
+                    quota_marker = self._is_quota_body(status, error_body)
+                    if quota_marker is not None:
+                        retry_after = parse_retry_after(
+                            response.headers.get("retry-after")
+                        )
+                        await self.breaker.record_failure()
+                        metrics.inc(
+                            "apiwrapper_upstream_quota_errors_total",
+                            labels={"source": "http_body", "status": str(status)},
+                        )
+                        logger.warning(
+                            "upstream_quota_exceeded",
+                            status=status,
+                            url=url,
+                            marker=quota_marker,
+                            retry_after=retry_after,
+                            hint=(
+                                "Upstream limited this account; retrying would only "
+                                "extend the lockout. Wait for the window to expire "
+                                "(or switch account once a credential pool exists)."
+                            ),
+                        )
+                        raise UpstreamQuotaExceeded(
+                            quota_error_message(quota_marker, "HTTP response body",
+                                                error_body),
+                            status_code=status,
+                            body=error_body,
+                            url=url,
+                            retry_after=retry_after,
+                            marker=quota_marker,
+                        )
 
                     if self._is_auth_body(status, error_body) and not self._is_captcha_body(
                         status, error_body

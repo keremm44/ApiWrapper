@@ -184,6 +184,8 @@ tek token üretimini paylaşır. Token reddi (upstream 403) → otomatik invalid
 
 - `uvloop` + `httptools`, tek paylaşılan `httpx.AsyncClient` (HTTP/2, keep-alive havuzu).
 - Retry: yalnız idempotent hatalarda (429/5xx/ağ), üstel geri çekilme + full jitter, `Retry-After` saygısı.
+- Kota istisnası: gövde `UPSTREAM_LIMIT_MARKERS` işaretlerinden birini taşıyorsa (örn. "upstream limit reached") istek **retry edilmez**; `429 upstream_quota_reached` + `Retry-After` döner. Kilitli hesapla tekrar denemek kilit süresini uzattığı için bu bilinçli bir tercihtir.
+- Sohbet rotasyonu: `SESSION_REUSE=true` iken upstream `chat_id`'si API anahtarı parmak izine (`client_fingerprint`, SHA-256) bağlanır; `SESSION_ROTATE_AFTER_MESSAGES` / `SESSION_ROTATE_AFTER_SECONDS` eşiğinde yeni sohbete geçilir. OpenAI-uyumlu istemciler şema dışı `conversation_id` gönderemediği için bu gereklidir. **Dikkat:** istemci her istekte tüm geçmişi gönderir ve wrapper bunu tek prompt'a düzleştirir; sohbet yeniden kullanıldığında upstream kendi geçmişini de tutuyorsa bağlam iki kez hesaplanır. Rotasyon eşiği bu birikimi sınırlar.
 - Streaming'de **hiç** tam yanıt biriktirilmez (non-stream hariç) → sabit bellek.
 - Prometheus `/metrics`: istek sayacı, latency histogramı, TTFT (ilk token süresi), upstream hata sayacı.
 - Graceful shutdown: lifespan içinde client/pool kapatma, aktif stream'lere drain süresi.
