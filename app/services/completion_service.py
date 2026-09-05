@@ -51,23 +51,14 @@ from app.utils.tokens import count_tokens, tiktoken_available
 
 logger = get_logger(__name__)
 
-#: İstemciye *içerik* taşıyan olay türleri. `f:` (START) yalnızca messageId
-#: taşır; onu "gönderildi" sayarsak devir koşulu (`emitted == 0`) gerçek
-#: akışların hepsinde daha ilk metin delta'sında kapanır — upstream her zaman
-#: `f:` ile başladığı için hesap devri hiç çalışmaz.
-_CLIENT_VISIBLE_EVENTS = frozenset(
-    {
-        EventType.TEXT,
-        EventType.REASONING,
-        EventType.DATA,
-        EventType.MESSAGE_ANNOTATION,
-        EventType.TOOL_CALL,
-        EventType.TOOL_RESULT,
-        EventType.STEP_FINISH,
-        EventType.FINISH,
-        EventType.ERROR,
-    }
-)
+#: İstemciye içerik taşıyan olay türleri. Akış yolunda istemciye giden tek şey
+#: `EventType.TEXT` delta'sıdır (`make_content_chunk`); `REASONING`, `DATA`,
+#: `TOOL_*`, `MESSAGE_ANNOTATION` ve `FINISH` olayları parse edilir ama tek
+#: bayt bile iletilmez. Bunları "gönderildi" saymak, düşünme (thinking)
+#: modellerinde devri haksız yere kapatırdı: bu modeller metinden önce düşünme
+#: delta'ları gönderir, dolayısıyla istemciye hiçbir şey ulaşmamışken
+#: `emitted > 0` olur ve hesap devri yapılamazdı.
+_CLIENT_VISIBLE_EVENTS = frozenset({EventType.TEXT})
 
 
 def _dump(chunk) -> dict:
@@ -370,7 +361,7 @@ class CompletionService:
                             self._raise_for_quota(marker, event.text)
                         elif event.type is EventType.TEXT and event.text and scanner.active:
                             self._raise_for_quota(scanner.feed(event.text), event.text)
-                        if event.type in _CLIENT_VISIBLE_EVENTS:
+                        if event.type in _CLIENT_VISIBLE_EVENTS and event.text:
                             emitted += 1
                         yield event
                 return

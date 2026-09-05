@@ -125,6 +125,33 @@ def test_non_streaming_completion(client):
 
 
 @respx.mock
+def test_reasoning_deltas_are_not_returned_as_content(client):
+    """Düşünme (thinking) modelleri: `g:` delta'ları yanıta girmez.
+
+    Upstream düşünme adımlarını ayrı olay türüyle gönderir; istemciye yalnızca
+    metin delta'ları iletilir. Continue gibi istemciler ham düşünme zincirini
+    değil, nihai cevabı görür.
+    """
+    body = (
+        'f:{"messageId":"msg-think"}\n'
+        'g:"önce sorunu parçalara ayırıyorum"\n'
+        'ag:"ikinci adım"\n'
+    ).encode() + ai_stream("cevap ", "burada")
+    stream_route(respx).mock(return_value=httpx.Response(200, content=body))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "selam"}]},
+    )
+
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert content == "cevap burada"
+    assert "parçalara" not in content
+    assert "ikinci adım" not in content
+
+
+@respx.mock
 def test_streaming_completion_sse_shape(client):
     stream_route(respx).mock(
         return_value=httpx.Response(200, content=ai_stream("Bir", " iki"))

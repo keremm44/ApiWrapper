@@ -391,6 +391,40 @@ def test_start_event_does_not_block_account_switch():
 
 
 @respx.mock
+def test_reasoning_deltas_do_not_block_account_switch():
+    """Düşünme (thinking) modelleri devri engellememeli.
+
+    Bu modeller cevap metninden önce `g:` düşünme delta'ları gönderir. O
+    delta'lar istemciye iletilmediği için "gönderildi" sayılmamalı; aksi halde
+    istemci tek bayt almamışken `emitted > 0` olur ve kota geldiğinde ikinci
+    hesaba geçilemezdi.
+    """
+    with text_scan_client() as client:
+        thinking = (
+            'f:{"messageId":"msg-think"}\n'
+            'g:"önce sorunu parçalara ayırıyorum"\n'
+            'g:"şimdi kodu yazabilirim"\n'
+        ).encode() + ai_stream(QUOTA_TEXT)
+        route = route_by_cookie(
+            respx,
+            {
+                "COOKIE-1": httpx.Response(200, content=thinking),
+                "COOKIE-2": httpx.Response(200, content=ai_stream("ikinci hesap")),
+            },
+        )
+        response = client.post("/v1/chat/completions", json=chat_body())
+
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "ikinci hesap"
+        assert route.call_count == 2
+        assert "parçalara" not in response.json()["choices"][0]["message"]["content"]
+
+        # Kota yine ilk hesaba yazılmalı.
+        accounts = client.get("/v1/admin/accounts").json()["accounts"]
+        assert next(a for a in accounts if a["slot"] == 1)["quota_hits"] == 1
+
+
+@respx.mock
 def test_switch_limit_is_honoured(pool_client):
     """account_max_switches=2 ile en fazla 3 hesap denenir (burada 2 hesap var)."""
     route = route_by_cookie(
