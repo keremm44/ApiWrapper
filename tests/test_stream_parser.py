@@ -35,6 +35,21 @@ def test_parses_new_ai_sdk_text_and_reasoning_codes():
     assert done.finish_reason == "stop"
 
 
+def test_extracts_text_from_nested_payload():
+    """`delta: {"text": "..."}` gibi iç içe taşıyıcılar da çözülmeli."""
+    event = parse_line('0:{"delta":{"text":"iç içe"}}')
+    assert event is not None
+    assert event.text == "iç içe"
+
+
+def test_unwraps_data_stream_line_wrapped_in_sse():
+    """Bazı proxy'ler Vercel satırını tekrar `data:` içine sarar."""
+    event = parse_line('data: 0:"sarmal metin"')
+    assert event is not None
+    assert event.type is EventType.TEXT
+    assert event.text == "sarmal metin"
+
+
 def test_parses_start_event():
     event = parse_line('f:{"messageId":"m1"}')
     assert event.type is EventType.START

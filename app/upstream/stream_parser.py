@@ -96,6 +96,11 @@ def _extract_text(payload: Any) -> str:
             value = payload.get(key)
             if isinstance(value, str):
                 return value
+            if isinstance(value, dict):
+                # `delta: {"text": "..."}` gibi iç içe taşıyıcılar.
+                nested = _extract_text(value)
+                if nested:
+                    return nested
         return ""
     if isinstance(payload, list):
         return "".join(_extract_text(item) for item in payload)
@@ -119,6 +124,12 @@ def parse_line(line: str) -> StreamEvent | None:
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
+            # Bazı proxy/SSE katmanları Vercel data-stream satırını tekrar
+            # `data:` içine sarar: `data: 0:"metin"`.
+            if ":" in line and len(line.split(":", 1)[0].strip()) <= 2:
+                nested = parse_line(line)
+                if nested is not None:
+                    return nested
             return StreamEvent(type=EventType.TEXT, text=line, raw_code="sse")
         return _from_sse_payload(payload)
 

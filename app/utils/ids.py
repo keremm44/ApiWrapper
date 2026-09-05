@@ -14,14 +14,29 @@ def new_uuid4() -> str:
     return str(uuid.uuid4())
 
 
+def new_uuid7() -> str:
+    """Zaman sıralı UUIDv7 üretir (Arena upstream kimlik biçimi)."""
+    timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
+    random_a = secrets.randbits(12)
+    random_b = secrets.randbits(62)
+    value = (
+        (timestamp_ms << 80)
+        | (0x7 << 76)
+        | (random_a << 64)
+        | (0b10 << 62)
+        | random_b
+    )
+    return str(uuid.UUID(int=value))
+
+
 def new_chat_id() -> str:
-    """Upstream sohbet kimliği (UUIDv4)."""
-    return new_uuid4()
+    """Upstream sohbet kimliği (UUIDv7)."""
+    return new_uuid7()
 
 
 def new_message_id() -> str:
-    """Upstream mesaj kimliği (UUIDv4)."""
-    return new_uuid4()
+    """Upstream mesaj kimliği (UUIDv7)."""
+    return new_uuid7()
 
 
 def random_suffix(length: int = 24) -> str:
