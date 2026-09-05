@@ -71,9 +71,10 @@ class SessionManager:
         self,
         conversation_id: str | None = None,
         client_identity: str | None = None,
+        account_label: str | None = None,
     ) -> Session:
         """İstek için bir oturum döndürür (gerekirse oluşturur/yeniler)."""
-        key = self._session_key(conversation_id, client_identity)
+        key = self._session_key(conversation_id, client_identity, account_label)
         if key is None:
             # Durumsuz yol: eskisi gibi her istekte yeni sohbet.
             session = Session(chat_id=new_chat_id())
@@ -110,28 +111,40 @@ class SessionManager:
         return session
 
     def _session_key(
-        self, conversation_id: str | None, client_identity: str | None
+        self,
+        conversation_id: str | None,
+        client_identity: str | None,
+        account_label: str | None = None,
     ) -> str | None:
         """Önbellek anahtarını seçer; `None` durumsuz modu ifade eder.
 
         Öncelik sırası önemlidir: `session_reuse` açıkken `session_stateless` yok
         sayılır; aksi halde `session_stateless=True` her şeyi durumsuza zorlar
         (istemci `conversation_id` gönderse bile).
+
+        Hesap etiketi anahtara her zaman eklenir: upstream sohbeti bir hesaba
+        aittir, hesap değişince başka hesabın sohbetine yazmamak gerekir.
         """
+        base: str | None
         if self.settings.session_reuse:
             if conversation_id:
-                return f"conv:{conversation_id}"
-            if client_identity:
-                return f"client:{client_identity}"
-            return None
-        if self.settings.session_stateless:
-            return None
-        if conversation_id:
-            return f"conv:{conversation_id}"
-        if client_identity:
+                base = f"conv:{conversation_id}"
+            elif client_identity:
+                base = f"client:{client_identity}"
+            else:
+                base = None
+        elif self.settings.session_stateless:
+            base = None
+        elif conversation_id:
+            base = f"conv:{conversation_id}"
+        elif client_identity:
             # conversation_id bekleyen modda istemci kimliği yedek anahtar olur.
-            return f"client:{client_identity}"
-        return None
+            base = f"client:{client_identity}"
+        else:
+            base = None
+        if base is None:
+            return None
+        return f"{base}@{account_label}" if account_label else base
 
     async def invalidate(self, conversation_id: str, client_identity: str | None = None) -> None:
         """Verilen anahtarlara bağlı oturumları düşürür (sonraki istek yeni sohbet alır)."""

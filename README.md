@@ -23,6 +23,7 @@ Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
 | Güvenlik | Sabit zamanlı API key doğrulama, log maskeleme, gövde/mesaj/prompt limitleri, SSRF'e kapalı sabit hedef |
 | Dayanıklılık | Retry + full jitter, `Retry-After` desteği, devre kesici, eşzamanlılık tavanı, idle timeout, istemci kopması iptali |
 | Kota tespiti | Hedefin "limit reached" tarzı mesajı işaret tabanlı yakalanır (HTTP gövdesi · akış hata olayı · opsiyonel düz metin taraması) → `429 upstream_quota_reached` + `Retry-After`, **retry edilmez** |
+| Hesap havuzu | Çoklu çerez/token; kayan pencere sayacı, kilitte otomatik hesap geçişi, AIMD ile öğrenilen bütçe, hesap başına captcha token'ı |
 | Sohbet yönetimi | `SESSION_REUSE=true` ile istemci başına tek upstream sohbeti; `SESSION_ROTATE_AFTER_MESSAGES`/`_SECONDS` eşiğinde yeni sohbete geçilir (Continue gibi `conversation_id` gönderemeyen istemciler için) |
 | reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
 | Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, Prometheus metrikleri (TTFT dahil) |
@@ -242,9 +243,46 @@ Araç artık cURL'deki `authorization` başlığını da yazıyor (`UPSTREAM_ACC
 Cookie ile gider ve bunu belirten bir uyarı üretilir; ne başlık ne oturum çerezi varsa
 "istek anonim gider" uyarısı çıkar. `referer`'dan da `UPSTREAM_REFERER_PATH` şablonu üretilir.
 
-> **Not:** `_2` soneksli anahtarlar kayıt amaçlıdır — uygulama şu an yalnızca soneksiz
-> (1. hesap) anahtarları okuyor. Çoklu hesapların gerçekten kullanılması için hesap
-> havuzu gerekiyor.
+Kaydedilen hesaplar hesap havuzu tarafından okunur ve istekler aralarında dağıtılır
+(aşağıda). Yuvalar `Settings` içinde açıkça tanımlıdır; 4 hesap desteklenir
+(`upstream_account_name`, `_2`, `_3`, `_4`).
+
+## Hesap havuzu ve kota yönetimi
+
+Upstream bir hesabı kayan pencerede çok mesaj atınca kilitliyor ve bunu bir metinle
+bildiriyor. Havuz bunu şöyle yönetir:
+
+```bash
+ACCOUNT_MSG_BUDGET=15               # hesap başına yumuşak bütçe (pencere içi mesaj)
+ACCOUNT_QUOTA_WINDOW_SECONDS=1200   # kota penceresi (20 dk)
+ACCOUNT_COOLDOWN_SECONDS=1200       # kilit algılanan hesabın dinlenme süresi
+ACCOUNT_MAX_SWITCHES=2              # tek istekte en fazla kaç hesap değiştirilsin
+ACCOUNT_BUDGET_GROWTH_STREAK=3      # bütçenin +1 artması için gereken temiz pencere
+```
+
+- **Seçim:** penceresi en boş hesap tercih edilir. Bütçe bir *engel* değil *tercih
+  sırası*dır — tek hesaplı kurulumda istek asla reddedilmez.
+- **Kilit:** `upstream limit reached` algılanınca o hesap `ACCOUNT_COOLDOWN_SECONDS`
+  boyunca dinlendirilir ve istek **aynı istekte** başka hesapla yeniden denenir
+  (yalnızca istemciye henüz tek bir parça gönderilmediyse; aksi halde iki yanıt
+  birbirine karışırdı).
+- **AIMD:** bir hesap pencere içinde N. mesajda kilitlendiyse gerçek sınır en fazla
+  N-1'dir → öğrenilen tavan `N-1` olur (çarpan azaltma). Bütçe kadar mesaj kilit
+  olmadan geçilince tavan +1 artar (toplama artırma), ama her mesajda değil —
+  `ACCOUNT_BUDGET_GROWTH_STREAK` kadar temiz pencere gerekir.
+- **Captcha:** her hesap **kendi** `RECAPTCHA_STATIC_TOKEN` değerini kullanır; token
+  tarayıcı oturumuna bağlı olduğu için hesaplar arası paylaşılmaz. Token ~2 dk
+  ömürlüdür, yani her hesabın cURL'ünü düzenli tazelemeniz gerekir.
+- **Sohbet:** upstream sohbeti hesaba bağlıdır; hesap değişince başka hesabın
+  sohbetine yazılmaz.
+
+Durum ve öğrenilen sınırlar:
+
+```bash
+curl -H "Authorization: Bearer $API_KEY" http://localhost:8000/v1/admin/accounts
+curl -X POST -H "Authorization: Bearer $API_KEY" \
+     http://localhost:8000/v1/admin/accounts/2/reset   # dinlenmeyi elle sıfırla
+```
 
 ## reCAPTCHA sağlayıcıları
 

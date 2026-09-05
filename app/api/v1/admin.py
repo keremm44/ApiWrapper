@@ -7,9 +7,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from app.api.deps import get_recaptcha, get_sessions, get_upstream
+from app.core.errors import InvalidRequestError
 from app.core.logging import mask_value
 from app.core.metrics import metrics
 from app.core.security import api_key_dependency
+from app.services.account import AccountPool
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
 from app.upstream.auth import (
@@ -25,6 +27,46 @@ from app.upstream.client import UpstreamClient
 from app.upstream.headers import build_authorization
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(api_key_dependency)])
+
+
+def get_accounts(request: Request) -> AccountPool:
+    return request.app.state.accounts
+
+
+@router.get("/accounts", summary="Upstream account pool status")
+async def account_status(
+    request: Request, accounts: AccountPool = Depends(get_accounts)
+) -> dict[str, Any]:
+    """Havuzdaki hesapların kota/dinlenme durumunu **gizli değer ifşa etmeden** gösterir.
+
+    Upstream'in gerçek kota sayısını bilmediğimiz için buradaki `learned_limit`
+    kilitlenmelerden öğrenilen tavandır; `messages_in_window` ise bizim saydığımız
+    kayan pencere değeridir.
+    """
+    snapshot = accounts.snapshot()
+    return {
+        "configured_accounts": len([a for a in snapshot if a["configured"]]),
+        "quota_window_seconds": request.app.state.settings.account_quota_window_seconds,
+        "cooldown_seconds": request.app.state.settings.account_cooldown_seconds,
+        "initial_budget": request.app.state.settings.account_msg_budget,
+        "max_switches_per_request": request.app.state.settings.account_max_switches,
+        "switches_total": metrics.counter_total("apiwrapper_account_switches_total"),
+        "accounts": snapshot,
+    }
+
+
+@router.post("/accounts/{slot}/reset", summary="Clear an account's cooldown")
+async def reset_account_cooldown(
+    slot: int, accounts: AccountPool = Depends(get_accounts)
+) -> dict[str, Any]:
+    """Bir hesabın dinlenme süresini sıfırlar (örn. kilit erken açıldıysa)."""
+    account = accounts.get(slot)
+    if account is None:
+        raise InvalidRequestError(
+            f"No account in slot {slot}.", param="slot"
+        )
+    accounts.clear_cooldown(slot)
+    return {"slot": slot, "name": account.label, "cooldown_remaining_seconds": 0.0}
 
 
 @router.post("/sessions/clear", summary="Clear cached upstream sessions")

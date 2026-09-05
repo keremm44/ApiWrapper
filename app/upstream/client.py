@@ -12,6 +12,7 @@ import httpx
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.metrics import metrics
+from app.services.account import Account
 from app.upstream.breaker import CircuitBreaker
 from app.upstream.exceptions import (
     CircuitOpen,
@@ -165,11 +166,12 @@ class UpstreamClient:
     # ------------------------------------------------------------- request
     @asynccontextmanager
     async def stream_completion(
-        self, chat_id: str, payload: dict[str, object]
+        self, chat_id: str, payload: dict[str, object], account: Account | None = None
     ) -> AsyncIterator[AsyncIterator[bytes]]:
         """Upstream'e istek atıp bayt akışı döndürür (retry + breaker dahil).
 
         `--data-raw` ile birebir aynı gövde `text/plain` olarak gönderilir.
+        `account` verilirse o hesabın kimlik bilgileri ve başlıkları kullanılır.
         """
         if not await self.breaker.allows():
             metrics.inc("apiwrapper_upstream_errors_total", labels={"reason": "circuit_open"})
@@ -178,8 +180,11 @@ class UpstreamClient:
                 status_code=503,
             )
 
-        url = self.settings.stream_url(chat_id)
-        headers = build_stream_headers(self.settings, chat_id)
+        request_settings = (
+            account.effective_settings(self.settings) if account else self.settings
+        )
+        url = request_settings.stream_url(chat_id)
+        headers = build_stream_headers(request_settings, chat_id)
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
         last_error: Exception | None = None

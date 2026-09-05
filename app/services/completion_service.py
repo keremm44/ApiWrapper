@@ -28,6 +28,7 @@ from app.core.logging import get_logger
 from app.core.metrics import metrics
 from app.schemas.openai import ChatCompletionRequest, ChatCompletionResponse
 from app.schemas.upstream import EventType, StreamEvent
+from app.services.account import Account, AccountPool
 from app.services.model_registry import ModelRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
@@ -119,12 +120,14 @@ class CompletionService:
         registry: ModelRegistry,
         sessions: SessionManager,
         recaptcha: RecaptchaProvider,
+        accounts: AccountPool | None = None,
     ) -> None:
         self.settings = settings
         self.upstream = upstream
         self.registry = registry
         self.sessions = sessions
         self.recaptcha = recaptcha
+        self.accounts = accounts if accounts is not None else AccountPool(settings)
 
     # ------------------------------------------------------------ helpers
     @property
@@ -231,12 +234,25 @@ class CompletionService:
         )
 
     async def _prepare(
-        self, request: ChatCompletionRequest, client_identity: str | None = None
+        self,
+        request: ChatCompletionRequest,
+        client_identity: str | None = None,
+        account: Account | None = None,
     ):
         """Model çözümü, oturum, captcha token'ı ve gövde inşası."""
         entry = self.registry.resolve(request.model)
-        session = await self.sessions.acquire(request.conversation_id, client_identity)
-        token = await self.recaptcha.get_token()
+        # Sohbet hesaba bağlıdır: hesap değişince upstream tarafında başka bir
+        # sohbete geçilir (başka hesabın sohbetine yazmak olmaz).
+        account_label = account.label if account else None
+        session = await self.sessions.acquire(
+            request.conversation_id, client_identity, account_label
+        )
+        # Hesabın kendi captcha token'ı varsa o kullanılır; token tarayıcı
+        # oturumuna bağlı olduğu için hesaplar arası paylaşılmamalıdır.
+        if account is not None and account.has_own_captcha_token:
+            token = account.recaptcha_token
+        else:
+            token = await self.recaptcha.get_token()
         built = build_upstream_request(
             request,
             settings=self.settings,
@@ -246,47 +262,105 @@ class CompletionService:
         )
         return entry, built
 
+    def _pick_account(self) -> Account | None:
+        """Kullanılabilir bir hesap seçer; havuz boşsa `None` (eski davranış)."""
+        account = self.accounts.pick()
+        if account is None and self.accounts.size:
+            # Tüm hesaplar dinlenmede: ne zaman açılacağını söyleyerek reddet.
+            wait = self.accounts.next_cooldown_end()
+            raise UpstreamQuotaExceeded(
+                "All upstream accounts are temporarily locked by the provider. "
+                f"Earliest retry in {int(wait)}s.",
+                retry_after=wait or None,
+            )
+        return account
+
     async def _events(
         self,
         request: ChatCompletionRequest,
-        allow_captcha_retry: bool = True,
         client_identity: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Upstream olay akışı; captcha reddinde bir kez yeniler ve tekrar dener."""
-        entry, built = await self._prepare(request, client_identity)
-        logger.info(
-            "upstream_request",
-            model=entry.id,
-            upstream_model=entry.upstream_id,
-            chat_id=built.chat_id,
-            prompt_chars=len(built.prompt),
-            url=self.settings.stream_url(built.chat_id),
-        )
-        try:
-            async with self.upstream.stream_completion(
-                built.chat_id, built.payload.to_wire(self.settings.upstream_recaptcha_field)
-            ) as chunks:
-                idle = self.settings.stream_idle_timeout
-                iterator = parse_stream(chunks).__aiter__()
-                while True:
-                    try:
-                        event = await asyncio.wait_for(iterator.__anext__(), timeout=idle)
-                    except StopAsyncIteration:
-                        break
-                    except TimeoutError as exc:
-                        raise UpstreamTimeout(
-                            f"No data received from upstream for {idle}s."
-                        ) from exc
-                    yield event
-        except RecaptchaRejected:
-            self.recaptcha.invalidate()
-            if not allow_captcha_retry:
-                raise
-            logger.warning("recaptcha_rejected_retrying")
-            async for event in self._events(
-                request, allow_captcha_retry=False, client_identity=client_identity
-            ):
-                yield event
+        """Upstream olay akışı.
+
+        İki otomatik kurtarma yolu vardır: captcha reddinde token bir kez
+        yenilenir, hesap kısıtlamasında başka hesaba geçilir. Her ikisi de
+        **yalnızca istemciye henüz tek bir olay gönderilmediyse** yapılır; aksi
+        halde iki farklı yanıtın parçaları birbirine karışırdı.
+        """
+        max_switches = max(0, self.settings.account_max_switches)
+        switches = 0
+        captcha_retried = False
+        emitted = 0
+        account = self._pick_account()
+
+        while True:
+            entry, built = await self._prepare(request, client_identity, account)
+            request_settings = (
+                account.effective_settings(self.settings) if account else self.settings
+            )
+            account_label = account.label if account else None
+            logger.info(
+                "upstream_request",
+                model=entry.id,
+                upstream_model=entry.upstream_id,
+                chat_id=built.chat_id,
+                account=account_label,
+                prompt_chars=len(built.prompt),
+                url=request_settings.stream_url(built.chat_id),
+            )
+            try:
+                async with self.upstream.stream_completion(
+                    built.chat_id,
+                    built.payload.to_wire(self.settings.upstream_recaptcha_field),
+                    account=account,
+                ) as chunks:
+                    idle = self.settings.stream_idle_timeout
+                    iterator = parse_stream(chunks).__aiter__()
+                    while True:
+                        try:
+                            event = await asyncio.wait_for(
+                                iterator.__anext__(), timeout=idle
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except TimeoutError as exc:
+                            raise UpstreamTimeout(
+                                f"No data received from upstream for {idle}s."
+                            ) from exc
+                        if emitted == 0 and account is not None:
+                            # İlk olay geldi: upstream isteği kabul etti.
+                            self.accounts.record_message(account.slot)
+                        emitted += 1
+                        yield event
+                return
+            except UpstreamQuotaExceeded:
+                if account is not None:
+                    self.accounts.report_quota(account.slot)
+                retryable = emitted == 0 and switches < max_switches
+                replacement = self._pick_account() if retryable else None
+                if replacement is None or (
+                    account is not None and replacement.slot == account.slot
+                ):
+                    raise
+                switches += 1
+                logger.warning(
+                    "account_switched",
+                    from_account=account_label,
+                    to_account=replacement.label,
+                    switch=switches,
+                )
+                metrics.inc(
+                    "apiwrapper_account_switches_total", labels={"reason": "switch"}
+                )
+                account = replacement
+                continue
+            except RecaptchaRejected:
+                self.recaptcha.invalidate()
+                if captcha_retried or emitted > 0:
+                    raise
+                captcha_retried = True
+                logger.warning("recaptcha_rejected_retrying")
+                continue
 
     # --------------------------------------------------------- non-stream
     async def create_completion(

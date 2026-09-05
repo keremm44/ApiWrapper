@@ -113,6 +113,63 @@ class Settings(BaseSettings):
     #: gönderir; varsayılan kapalılık yanlış alarm riskini sıfırda tutar.
     quota_text_scan_chars: int = 0
 
+    # --------------------------------------------------------- account pool
+    #: Hesap yuvaları. `scripts/curl_to_env.py` 1. cURL'ü soneksiz (yukarıdaki)
+    #: anahtarlara, sonraki cURL'leri `_2`, `_3`, `_4` soneksli anahtarlara yazar.
+    #: pydantic-settings yalnızca **tanımlı** alanları okuduğu için yuvalar burada
+    #: açıkça bildirilir. Daha fazla hesap gerekirse aynı kalıp devam ettirilir
+    #: (veya `config/accounts.yaml` desteği eklenir).
+    upstream_account_name: str = ""
+
+    upstream_cookie_2: str = ""
+    upstream_access_token_2: str = ""
+    upstream_auth_from_cookie_2: bool = False
+    upstream_auth_scheme_2: str = "Bearer"
+    upstream_token_cookie_names_2: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    upstream_user_agent_2: str = ""
+    upstream_accept_language_2: str = ""
+    upstream_referer_path_2: str = ""
+    recaptcha_static_token_2: str = ""
+    upstream_account_2_name: str = ""
+
+    upstream_cookie_3: str = ""
+    upstream_access_token_3: str = ""
+    upstream_auth_from_cookie_3: bool = False
+    upstream_auth_scheme_3: str = "Bearer"
+    upstream_token_cookie_names_3: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    upstream_user_agent_3: str = ""
+    upstream_accept_language_3: str = ""
+    upstream_referer_path_3: str = ""
+    recaptcha_static_token_3: str = ""
+    upstream_account_3_name: str = ""
+
+    upstream_cookie_4: str = ""
+    upstream_access_token_4: str = ""
+    upstream_auth_from_cookie_4: bool = False
+    upstream_auth_scheme_4: str = "Bearer"
+    upstream_token_cookie_names_4: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    upstream_user_agent_4: str = ""
+    upstream_accept_language_4: str = ""
+    upstream_referer_path_4: str = ""
+    recaptcha_static_token_4: str = ""
+    upstream_account_4_name: str = ""
+
+    #: Upstream'in hesap başına izin verdiği tahmini mesaj sayısı (kayan pencere).
+    #: Bu **yumuşak** bir bütçedir: hangi hesabın tercih edileceğini belirler,
+    #: isteği engellemez. Gerçek sınır öğrenilince (`_learned_limit`) bu değer
+    #: yalnızca başlangıç tahmini olarak kalır.
+    account_msg_budget: int = 15
+    #: Kota penceresinin uzunluğu (saniye). Hedef 20 dk kilitliyorsa 1200.
+    account_quota_window_seconds: float = 1200.0
+    #: Bütçenin bir mesaj artması için gereken üst üste "temiz pencere" sayısı
+    #: (AIMD'nin toplama artırma adımı). Düşük değer limite hızlı yaklaşır ama
+    #: kilit riskini artırır.
+    account_budget_growth_streak: int = 3
+    #: Kilit algılanan hesabın dinlendirme süresi (saniye).
+    account_cooldown_seconds: float = 1200.0
+    #: Tek bir istemci isteğinde en fazla kaç kez hesap değiştirilsin.
+    account_max_switches: int = 2
+
     # -------------------------------------------------------------- timeouts
     connect_timeout: float = 10.0
     read_timeout: float = 300.0
@@ -192,6 +249,9 @@ class Settings(BaseSettings):
         "api_keys",
         "cors_origins",
         "upstream_token_cookie_names",
+        "upstream_token_cookie_names_2",
+        "upstream_token_cookie_names_3",
+        "upstream_token_cookie_names_4",
         "upstream_limit_markers",
         mode="before",
     )

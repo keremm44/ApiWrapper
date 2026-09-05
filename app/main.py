@@ -20,6 +20,7 @@ from app.core.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
 )
+from app.services.account import build_account_pool
 from app.services.completion_service import CompletionService
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
@@ -85,17 +86,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
+    accounts = build_account_pool(settings)
 
     app.state.upstream = upstream
     app.state.recaptcha = recaptcha
     app.state.sessions = sessions
     app.state.registry = registry
+    app.state.accounts = accounts
     app.state.completion_service = CompletionService(
         settings=settings,
         upstream=upstream,
         registry=registry,
         sessions=sessions,
         recaptcha=recaptcha,
+        accounts=accounts,
     )
 
     logger.info(
@@ -104,6 +108,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         models=len(registry),
         recaptcha_provider=recaptcha.name,
         upstream=settings.base_url,
+        accounts=accounts.size,
     )
     try:
         yield

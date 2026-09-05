@@ -139,3 +139,18 @@ metrics.describe(
     "counter",
     "Eşik aşıldığı için açılan yeni upstream sohbet sayısı.",
 )
+metrics.describe(
+    "apiwrapper_account_switches_total",
+    "counter",
+    "Hesap değişimi sayısı (reason=switch hesap geçişi, reason=quota kilit).",
+)
+metrics.describe(
+    "apiwrapper_account_messages_in_window",
+    "gauge",
+    "Hesap başına kota penceresi içindeki mesaj sayısı.",
+)
+metrics.describe(
+    "apiwrapper_account_cooldown",
+    "gauge",
+    "Hesap dinlenmede mi (1) değil mi (0).",
+)
