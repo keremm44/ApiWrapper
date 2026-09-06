@@ -316,6 +316,12 @@ class CompletionService:
             # korunursa birinci hesabın kota metni ikinci hesabın normal
             # cevabıyla birleşir ve sağlam hesap da kilitlenir.
             scanner = self._new_quota_scanner()
+            # Upstream isteği kabul ettiğinde pencereye BİR mesaj işlenir.
+            # `emitted` ile kontrol edilmez: `emitted` yalnızca istemciye içerik
+            # taşıyan TEXT olaylarında artar, `f:` (START) olayında artmaz —
+            # dolayısıyla `emitted == 0` hem `f:` hem ilk TEXT için doğru kalır
+            # ve mesaj iki kez sayılırdı (kota penceresi yarı yarıya kısalırdı).
+            message_recorded = False
             entry, built = await self._prepare(request, client_identity, account)
             request_settings = (
                 account.effective_settings(self.settings) if account else self.settings
@@ -349,9 +355,10 @@ class CompletionService:
                             raise UpstreamTimeout(
                                 f"No data received from upstream for {idle}s."
                             ) from exc
-                        if emitted == 0 and account is not None:
+                        if not message_recorded and account is not None:
                             # İlk olay geldi: upstream isteği kabul etti.
                             self.accounts.record_message(account.slot)
+                            message_recorded = True
                         # Kota tespitini yield'dan önce yap: içerik istemciye
                         # ulaştıktan sonra devir yapılamaz (iki yanıt karışır).
                         if event.type is EventType.ERROR and event.text:

@@ -304,9 +304,10 @@ def test_text_quota_in_stream_switches_account_and_learns_limit():
         accounts = client.get("/v1/admin/accounts").json()["accounts"]
         first = next(a for a in accounts if a["slot"] == 1)
         # Devir ancak `report_quota` çağrıldıysa olur: dinlenme + öğrenilen sınır.
-        # AIMD kuralı `pencere - 1`; mock `f:` + tek delta gönderdiği için 2-1=1.
+        # Mock `f:` + tek delta gönderir; bu TEK upstream mesajıdır, dolayısıyla
+        # pencere 1 ve AIMD kuralı `max(1, pencere - 1)` = 1.
         assert first["quota_hits"] == 1
-        assert first["messages_in_window"] == 2
+        assert first["messages_in_window"] == 1
         assert first["learned_limit"] == 1
         assert first["cooldown_remaining_seconds"] == COOLDOWN
         # Kota metni istemciye sızmamalı.
@@ -463,7 +464,6 @@ def test_each_account_uses_its_own_cookie_and_token(pool_client):
 
 
 @respx.mock
-@respx.mock
 def test_each_account_gets_a_separate_upstream_chat():
     settings = two_account_settings(session_reuse=True)
     client = TestClient(create_app(settings))
@@ -492,6 +492,27 @@ def test_each_account_gets_a_separate_upstream_chat():
 
 
 # ------------------------------------------------------------------ admin
+@respx.mock
+def test_one_message_recorded_per_upstream_request(pool_client):
+    """Bir upstream isteği pencereye tam BİR mesaj yazmalı.
+
+    `emitted` yalnızca istemciye içerik taşıyan TEXT olaylarında artar; `f:`
+    (START) olayında artmaz. Bu yüzden `emitted == 0` hem `f:` hem ilk TEXT
+    için doğru kalıyor ve her istek iki mesaj sayılıyordu — kota penceresi
+    fiilen yarıya iniyordu.
+    """
+    ok = httpx.Response(200, content=ai_stream("bir ", "iki ", "üç"))
+    route = route_by_cookie(respx, {"COOKIE-1": ok, "COOKIE-2": ok})
+
+    for _ in range(3):
+        assert pool_client.post("/v1/chat/completions", json=chat_body()).status_code == 200
+    assert route.call_count == 3
+
+    body = pool_client.get("/v1/admin/accounts").json()
+    assert sum(a["total_messages"] for a in body["accounts"]) == 3
+    assert sum(a["messages_in_window"] for a in body["accounts"]) == 3
+
+
 def test_admin_accounts_lists_pool_without_secrets(pool_client):
     body = pool_client.get("/v1/admin/accounts").json()
     assert body["configured_accounts"] == 2
