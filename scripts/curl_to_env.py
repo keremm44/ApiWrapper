@@ -649,12 +649,27 @@ def main() -> int:
         return 2
 
     if not env.get("UPSTREAM_COOKIE") and not env.get("UPSTREAM_ACCESS_TOKEN"):
+        found_headers = ", ".join(sorted(parsed.get("headers", {}))) or "(hiç yok)"
+        url = parsed.get("url", "")
         print(
             "HATA: cURL'de ne 'cookie' ne de 'authorization' başlığı bulundu.\n"
             "  Böyle bir cURL kaydedilirse yuva adıyla birlikte yazılır ama kimliği\n"
-            "  olmaz; uygulama o yuvayı kullanamaz. Siteye giriş yapmışken\n"
-            "  DevTools → Network → akış isteği → Copy → Copy as cURL ile yeniden\n"
-            "  alıp deneyin.",
+            "  olmaz; uygulama o yuvayı kullanamaz.\n"
+            "\n"
+            "  Aracın gördüğü girdi:\n"
+            f"    uzunluk     : {len(raw)} karakter\n"
+            f"    url         : {url or '(çıkarılamadı)'}\n"
+            f"    başlıklar   : {found_headers}\n"
+            f"    gövde       : {len(parsed.get('body', ''))} karakter\n"
+            f"    ilk 300 kr  : {raw.strip()[:300]!r}\n"
+            "\n"
+            "  Olası sebepler:\n"
+            "   * İstek 'Provisional headers are shown' durumundayken kopyalandı\n"
+            "     (yanıt bitmeden kopyalamayın; adblock'u kapatın, Disable cache açın).\n"
+            "   * PowerShell panoyu bozdu: 'Get-Clipboard -Raw' deneyin, ya da cURL'ü\n"
+            "     Notepad ile bir dosyaya kaydedip dosya adını verin.\n"
+            "   * Yanlış istek kopyalandı: akış isteği POST olmalı ve gövdesinde\n"
+            "     'modelAId' bulunmalı.",
             file=sys.stderr,
         )
         return 2
