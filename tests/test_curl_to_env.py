@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sys
 import time
 
 import pytest
@@ -296,3 +297,55 @@ def test_mode_is_extracted_from_body(sample):
     body["mode"] = "direct"
     env, _, _ = build_settings(parse_curl(_curl(sample["cookie"], body)))
     assert env["UPSTREAM_MODE"] == "direct"
+
+
+# ------------------------------------------------------- Windows kullanım hataları
+def test_missing_curl_file_reports_a_clear_error(tmp_path, monkeypatch, capsys):
+    """Eksik dosya traceback değil, ne yapılacağını söyleyen bir mesaj vermeli."""
+    from scripts import curl_to_env
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curl_to_env.py",
+            "--write",
+            str(tmp_path / "curl1.txt"),
+            "--env-file",
+            str(tmp_path / ".env"),
+        ],
+    )
+    assert curl_to_env.main() == 2
+
+    err = capsys.readouterr().err
+    assert "bulunamadı" in err
+    assert "Get-Clipboard" in err  # dosyasız yolu gösteriyor
+    assert "Traceback" not in err
+
+
+def test_bom_prefixed_curl_file_still_parses(tmp_path, monkeypatch, capsys, sample):
+    """PowerShell/Notepad'in yazdığı UTF-8 BOM ilk token'ı bozmamalı."""
+    from scripts import curl_to_env
+
+    curl_file = tmp_path / "curl1.txt"
+    curl_file.write_bytes(
+        b"\xef\xbb\xbf" + _curl(sample["cookie"], sample["body"]).encode("utf-8")
+    )
+    env_file = tmp_path / ".env"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curl_to_env.py",
+            "--write",
+            str(curl_file),
+            "--env-file",
+            str(env_file),
+            "--models-file",
+            str(tmp_path / "models.yaml"),
+        ],
+    )
+    assert curl_to_env.main() == 0
+
+    written = env_file.read_text(encoding="utf-8")
+    assert "TARGET_DOMAIN=example-llm.ai" in written

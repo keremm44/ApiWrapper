@@ -581,9 +581,23 @@ def main() -> int:
             )
         return 0
 
-    raw = sys.stdin.read() if args.curl_file == "-" else Path(args.curl_file).read_text(
-        encoding="utf-8", errors="replace"
-    )
+    if args.curl_file == "-":
+        raw = sys.stdin.read()
+    else:
+        curl_path = Path(args.curl_file)
+        if not curl_path.is_file():
+            print(
+                f"HATA: '{args.curl_file}' bulunamadı (aranan dizin: {Path.cwd()}).\n"
+                "  İki yol var:\n"
+                "  1) cURL'ü panoya kopyalayıp doğrudan aktarın (dosya gerekmez):\n"
+                "       Get-Clipboard | python scripts/curl_to_env.py --write -\n"
+                "  2) cURL'ü bir dosyaya kaydedin (Notepad → curl1.txt, UTF-8) ve\n"
+                "     dosya adını tam yol verin.",
+                file=sys.stderr,
+            )
+            return 2
+        # utf-8-sig: Windows PowerShell'in yazdığı BOM'u da tolere eder.
+        raw = curl_path.read_text(encoding="utf-8-sig", errors="replace")
     if not raw.strip():
         print("HATA: cURL girdisi boş.", file=sys.stderr)
         return 2
