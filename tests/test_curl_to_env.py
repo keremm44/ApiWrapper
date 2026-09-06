@@ -18,8 +18,11 @@ import pytest
 from scripts.compare_curl import parse_curl
 from scripts.curl_to_env import (
     build_settings,
+    count_accounts,
     extract_captcha,
     merge_env,
+    next_free_slot,
+    slot_has_credentials,
     update_models_yaml,
 )
 
@@ -349,3 +352,116 @@ def test_bom_prefixed_curl_file_still_parses(tmp_path, monkeypatch, capsys, samp
 
     written = env_file.read_text(encoding="utf-8")
     assert "TARGET_DOMAIN=example-llm.ai" in written
+
+
+# --------------------------------------------------- yarım kalmış hesap yuvaları
+# Cookie başlığı olmayan bir cURL kaydedildiğinde yuva adıyla birlikte yazılıyor
+# ama kimliği olmuyordu. Uygulama (`load_accounts`) böyle yuvaları zaten atlar,
+# fakat araç onları "hesap" sayıp bir sonraki cURL'ü yeni bir yuvaya itiyordu.
+BROKEN_ENV = """\
+TARGET_DOMAIN=hedef.com
+UPSTREAM_COOKIE=AAAA
+UPSTREAM_ACCOUNT_2_NAME=hesap-2
+UPSTREAM_COOKIE_2=
+UPSTREAM_ACCOUNT_3_NAME=hesap-3
+UPSTREAM_COOKIE_3=
+UPSTREAM_ACCOUNT_4_NAME=hesap-4
+UPSTREAM_COOKIE_4=BBBB
+"""
+
+
+def _write_broken(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text(BROKEN_ENV, encoding="utf-8")
+    return path
+
+
+def test_name_only_slots_are_not_counted_as_accounts(tmp_path):
+    path = _write_broken(tmp_path)
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in BROKEN_ENV.strip().splitlines()
+    }
+    # 1. ve 4. yuva gerçek; 2. ve 3. yalnız adlı.
+    assert count_accounts(values) == 2
+    assert slot_has_credentials(values, 1) is True
+    assert slot_has_credentials(values, 2) is False
+    assert next_free_slot(path) == 2  # onarılacak yuva, yeni yuva değil
+
+
+def test_saving_repairs_a_half_written_slot(tmp_path, monkeypatch):
+    """Yeniden kaydetme yarım yuvayı doldurmalı, 5. yuvayı açmamalı."""
+    from scripts import curl_to_env
+
+    path = _write_broken(tmp_path)
+    body = '{"modelAId":"m","userMessage":{"content":"x"}}'
+    curl_file = tmp_path / "c.txt"
+    curl_file.write_text(
+        "curl 'https://hedef.com/x' -H 'cookie: oturum=YENI' "
+        f"--data-raw '{body}'",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curl_to_env.py",
+            "--write",
+            str(curl_file),
+            "--env-file",
+            str(path),
+            "--models-file",
+            str(tmp_path / "m.yaml"),
+        ],
+    )
+    assert curl_to_env.main() == 0
+
+    after = path.read_text(encoding="utf-8")
+    assert "UPSTREAM_COOKIE_2=oturum=YENI" in after
+    assert "UPSTREAM_COOKIE_5" not in after
+    assert "UPSTREAM_ACCOUNT_5_NAME" not in after
+
+
+def test_curl_without_credentials_is_refused(tmp_path, monkeypatch, capsys):
+    """Cookie/authorization olmayan cURL yarım yuva bırakmamalı."""
+    from scripts import curl_to_env
+
+    path = tmp_path / ".env"
+    body = '{"modelAId":"m","userMessage":{"content":"x"}}'
+    curl_file = tmp_path / "c.txt"
+    curl_file.write_text(
+        "curl 'https://hedef.com/x' -H 'accept: */*' "
+        f"--data-raw '{body}'",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curl_to_env.py",
+            "--write",
+            str(curl_file),
+            "--env-file",
+            str(path),
+        ],
+    )
+    assert curl_to_env.main() == 2
+
+    err = capsys.readouterr().err
+    assert "cookie" in err and "authorization" in err
+    # Hiçbir şey yazılmamış olmalı.
+    assert not path.exists() or "UPSTREAM_ACCOUNT" not in path.read_text(encoding="utf-8")
+
+
+def test_list_accounts_flags_unusable_slots(tmp_path, monkeypatch, capsys):
+    from scripts import curl_to_env
+
+    path = _write_broken(tmp_path)
+    monkeypatch.setattr(
+        sys, "argv", ["curl_to_env.py", "--env-file", str(path), "--list-accounts", "-"]
+    )
+    assert curl_to_env.main() == 0
+
+    out = capsys.readouterr().out
+    assert "2 kullanılabilir hesap var" in out
+    assert "KULLANILAMIYOR" in out

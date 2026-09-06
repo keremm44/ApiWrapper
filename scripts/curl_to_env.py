@@ -89,6 +89,9 @@ ENV_MARKER_COMMENT = "# scripts/curl_to_env.py tarafından eklendi"
 #: Otomatik adlandırma.
 DEFAULT_ACCOUNT_LABELS: tuple[str, ...] = ("hesap-1", "hesap-2", "hesap-3", "hesap-4")
 
+#: `app/services/account.py::MAX_ACCOUNT_SLOTS` ile aynı tarama sınırı.
+MAX_SCAN_SLOTS = 16
+
 #: Oturum çerezi olma ihtimali olan adlar (uyarı üretmek için).
 _SESSION_HINT = "auth"
 
@@ -216,15 +219,17 @@ def read_env_keys(path: Path) -> dict[str, str]:
 
 
 def next_free_slot(path: Path) -> int:
-    """Boş olan ilk hesap yuvasını bulur (1'den başlar)."""
+    """Boş olan ilk hesap yuvasını bulur (1'den başlar).
+
+    Adı yazılmış ama kimliği olmayan yuvalar **boş sayılır**: cookie başlığı
+    olmayan bir cURL'den arta kalmışlardır ve yeniden kaydetme o yuvayı
+    onarmalı, yeni bir yuva açmamalı.
+    """
     existing = read_env_keys(path)
-    slot = 1
-    while True:
-        name = existing.get(account_name_key(slot), "")
-        cookie = existing.get(account_key("UPSTREAM_COOKIE", slot), "")
-        if not name and not cookie:
+    for slot in range(1, MAX_SCAN_SLOTS + 1):
+        if not slot_has_credentials(existing, slot):
             return slot
-        slot += 1
+    return MAX_SCAN_SLOTS + 1
 
 
 def _is_account_key(key: str) -> bool:
@@ -259,17 +264,31 @@ def strip_account_keys(path: Path) -> int:
     return len(kept)
 
 
+def slot_has_credentials(values: dict[str, str], slot: int) -> bool:
+    """Yuva, isteği kimlikle gönderebilecek bilgiye sahip mi?
+
+    `app/services/account.py::Account.is_configured` ile aynı kural: cookie
+    veya access_token boş değilse dolu. **Yalnızca adı yazılmış yuvalar hesap
+    değildir** — cookie başlığı olmayan bir cURL kaydedildiğinde oluşurlar ve
+    uygulama onları zaten atlar.
+    """
+    return bool(
+        values.get(account_key("UPSTREAM_COOKIE", slot), "").strip()
+        or values.get(account_key("UPSTREAM_ACCESS_TOKEN", slot), "").strip()
+    )
+
+
 def count_accounts(values: dict[str, str]) -> int:
-    """`.env` içeriğinde kaç hesap yuvası dolu?"""
-    count = 0
-    slot = 1
-    while True:
-        name = values.get(account_name_key(slot), "")
-        cookie = values.get(account_key("UPSTREAM_COOKIE", slot), "")
-        if not name and not cookie:
-            return count
-        count += 1
-        slot += 1
+    """`.env` içeriğinde kaç *kullanılabilir* hesap var?
+
+    Tüm yuvalar taranır; aradaki boş yuvalar atlanır. Uygulama
+    (`load_accounts`) da böyle saydığı için iki sayı birbirini tutar.
+    """
+    return sum(
+        1
+        for slot in range(1, MAX_SCAN_SLOTS + 1)
+        if slot_has_credentials(values, slot)
+    )
 
 
 def build_settings(
@@ -568,16 +587,35 @@ def main() -> int:
 
     if args.list_accounts:
         values = read_env_keys(env_path)
-        total = count_accounts(values)
-        if not total:
+        used = [
+            slot
+            for slot in range(1, MAX_SCAN_SLOTS + 1)
+            if slot_has_credentials(values, slot)
+            or values.get(account_name_key(slot), "").strip()
+        ]
+        if not used:
             print(f"{env_path} içinde kayıtlı hesap yok.")
             return 0
-        print(f"{env_path} içinde {total} hesap var:")
-        for slot in range(1, total + 1):
+        total = count_accounts(values)
+        print(f"{env_path} içinde {total} kullanılabilir hesap var:")
+        for slot in used:
+            cookie = values.get(account_key("UPSTREAM_COOKIE", slot), "")
+            token = values.get(account_key("RECAPTCHA_STATIC_TOKEN", slot), "")
+            name = values.get(account_name_key(slot), "?") or "?"
+            flag = "" if slot_has_credentials(values, slot) else "   ← KULLANILAMIYOR"
             print(
-                f"  {slot}. {values.get(account_name_key(slot), '?')} "
-                f"(cookie {len(values.get(account_key('UPSTREAM_COOKIE', slot), ''))} kr, "
-                f"token {len(values.get(account_key('RECAPTCHA_STATIC_TOKEN', slot), ''))} kr)"
+                f"  {slot}. {name} "
+                f"(cookie {len(cookie)} kr, token {len(token)} kr){flag}"
+            )
+        broken = [s for s in used if not slot_has_credentials(values, s)]
+        if broken:
+            slots = ", ".join(str(s) for s in broken)
+            print(
+                f"\n  {slots}. yuva(lar)ın adı var ama çerezi/token'ı yok: cookie\n"
+                "  başlığı olmayan bir cURL kaydedilmiş. Uygulama bu yuvaları zaten\n"
+                "  atlar, yani hesap sayısını şişirmezler. Onarmak için o hesabın\n"
+                "  cURL'ünü siteye giriş yapmışken alıp yeniden kaydedin; aynı yuva\n"
+                "  kullanılır, yeni yuva açılmaz."
             )
         return 0
 
@@ -608,6 +646,17 @@ def main() -> int:
 
     if not env:
         print("HATA: cURL'den hiçbir ayar çıkarılamadı.", file=sys.stderr)
+        return 2
+
+    if not env.get("UPSTREAM_COOKIE") and not env.get("UPSTREAM_ACCESS_TOKEN"):
+        print(
+            "HATA: cURL'de ne 'cookie' ne de 'authorization' başlığı bulundu.\n"
+            "  Böyle bir cURL kaydedilirse yuva adıyla birlikte yazılır ama kimliği\n"
+            "  olmaz; uygulama o yuvayı kullanamaz. Siteye giriş yapmışken\n"
+            "  DevTools → Network → akış isteği → Copy → Copy as cURL ile yeniden\n"
+            "  alıp deneyin.",
+            file=sys.stderr,
+        )
         return 2
 
     slot, label = _resolve_slot(args.account, env_path)
@@ -692,15 +741,13 @@ def _resolve_slot(requested: str | None, env_path: Path) -> tuple[int, str]:
         ) else f"hesap-{slot}"
 
     existing = read_env_keys(env_path)
-    slot = 1
-    while True:
-        name = existing.get(account_name_key(slot), "")
-        cookie = existing.get(account_key("UPSTREAM_COOKIE", slot), "")
-        if not name and not cookie:
-            return slot, text
-        if name == text:
+    free: int | None = None
+    for slot in range(1, MAX_SCAN_SLOTS + 1):
+        if existing.get(account_name_key(slot), "") == text:
             return slot, text  # aynı ad -> aynı yuvayı tazele
-        slot += 1
+        if free is None and not slot_has_credentials(existing, slot):
+            free = slot
+    return (free or MAX_SCAN_SLOTS + 1), text
 
 
 if __name__ == "__main__":
